@@ -6,14 +6,15 @@ import { DEFAULT_SETTINGS } from "../src/lib/contracts";
 
 function request(path: string, body: unknown) { return new Request(`http://localhost/api/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
 
-test("priority adapter echoes the version and labels demo fallback", async () => {
+test("priority endpoint echoes version and uses deterministic rules without a key", async t => {
+  t.mock.method(globalThis, "fetch", async () => new Response("unavailable", { status: 503 }));
   const response = await prioritize(request("prioritize", { requestVersion: 42, settings: DEFAULT_SETTINGS, orders: [{ orderId: "ON-1", fulfillment: "delivery", ageMinutes: 3, estimatedPrepMinutes: 4, minutesUntilTargetReady: -1, courierWaitingMinutes: 0 }] }));
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.mode, "fallback");
   assert.equal(body.requestVersion, 42);
   assert.equal(body.ranking[0].orderId, "ON-1");
-  assert.match(body.ranking[0].reason, /not connected/);
+  assert.match(body.ranking[0].reason, /Rules score/);
 });
 test("unconnected vision returns 503 and never produces a match", async () => {
   const response = await verify(request("verify", { orderId: "ON-1", scanId: "scan-1", imageDataUrl: "data:image/png;base64,aGVsbG8=", expectedItems: [{ menuItemId: "burger", quantity: 1 }] }));

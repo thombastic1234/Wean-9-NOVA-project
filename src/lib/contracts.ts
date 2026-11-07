@@ -38,20 +38,20 @@ export const orderSchema = z.object({
 });
 export type Order = z.infer<typeof orderSchema>;
 export const settingsSchema = z.object({
-  ageWeight: z.number().min(0).max(10), urgencyWeight: z.number().min(0).max(10),
-  courierWeight: z.number().min(0).max(10), maxWaitMinutes: z.number().int().min(5).max(120),
+  ageWeight: z.number().int().min(0).max(10), urgencyWeight: z.number().int().min(0).max(10),
+  courierWeight: z.number().int().min(0).max(10), maxWaitMinutes: z.number().int().min(5).max(120),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 export const priorityRequestSchema = z.object({
   requestVersion: z.number().int().nonnegative(), settings: settingsSchema,
   orders: z.array(z.object({
-    orderId: z.string(), fulfillment: z.enum(["dine_in", "delivery"]), ageMinutes: z.number().nonnegative(),
+    orderId: z.string().trim().min(1).max(100), fulfillment: z.enum(["dine_in", "delivery"]), ageMinutes: z.number().nonnegative(),
     estimatedPrepMinutes: z.number().positive(), minutesUntilTargetReady: z.number(), courierWaitingMinutes: z.number().nonnegative(),
-  })),
+  })).refine(orders => new Set(orders.map(order => order.orderId)).size === orders.length, "Duplicate order IDs"),
 });
 export const priorityResponseSchema = z.object({
   requestVersion: z.number().int().nonnegative(), mode: z.enum(["ai", "fallback"]),
-  ranking: z.array(z.object({ orderId: z.string(), reason: z.string() })),
+  ranking: z.array(z.object({ orderId: z.string().min(1), reason: z.string().trim().min(1).max(240) })),
 });
 export type PriorityRequest = z.infer<typeof priorityRequestSchema>;
 export type PriorityResponse = z.infer<typeof priorityResponseSchema>;

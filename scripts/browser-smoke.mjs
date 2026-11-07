@@ -59,10 +59,31 @@ try {
   });
   await command('Runtime.enable');
   await command('Page.enable');
+  await command('Page.addScriptToEvaluateOnNewDocument', { source: `window.__priorityCalls = 0; const originalFetch = window.fetch.bind(window); window.fetch = (...args) => { if (args[0] === '/api/prioritize') window.__priorityCalls++; return originalFetch(...args); };` });
   await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
   await command('Page.navigate', { url: process.env.APP_URL || 'http://127.0.0.1:3000' });
   await until(() => evaluate(`document.querySelectorAll('.queue-column .ticket').length === 6`), 'six initial queue tickets');
-  await until(() => evaluate(`document.querySelector('.priority-reason')?.textContent.includes('not connected')`), 'priority fallback');
+  await until(() => evaluate(`document.querySelector('.priority-reason')?.textContent.includes('Rules score')`), 'priority fallback');
+  assert.equal(await evaluate('window.__priorityCalls'), 0, 'initial rendering makes no automatic API request');
+  await click('Reprioritize');
+  await until(() => evaluate(`!document.querySelector('.priority-actions button').disabled`), 'explicit priority request finishes');
+  assert.equal(await evaluate('window.__priorityCalls'), 1);
+  assert.equal(await evaluate(`document.querySelector('.mode-pill').textContent`), 'Rules fallback active');
+
+  // Hold a simulated test response to verify no overlap, actionable tickets, and stale-result rejection.
+  await evaluate(`window.__realFetch = window.fetch; window.fetch = (url, options) => { if (url !== '/api/prioritize') return window.__realFetch(url, options); window.__priorityCalls++; window.__priorityRequest = JSON.parse(options.body); return new Promise(resolve => window.__resolvePriority = resolve); };`);
+  await evaluate(`document.querySelector('.priority-actions button').click(); document.querySelector('.priority-actions button').click();`);
+  await until(() => evaluate('typeof window.__resolvePriority === "function"'), 'held test request');
+  assert.equal(await evaluate('window.__priorityCalls'), 2, 'overlapping clicks start only one request');
+  assert.equal(await evaluate(`document.querySelector('.queue-column .ticket button.full').disabled`), false, 'queue stays actionable during loading');
+  await click('Waiter order');
+  await until(() => evaluate(`document.querySelectorAll('.queue-column .ticket').length === 7`), 'input changes during loading');
+  await evaluate(`window.__resolvePriority(new Response(JSON.stringify({ requestVersion: window.__priorityRequest.requestVersion, mode: 'ai', ranking: window.__priorityRequest.orders.map(o => ({ orderId: o.orderId, reason: 'Simulated stale test response' })) }), { headers: { 'Content-Type': 'application/json' } })); window.fetch = window.__realFetch;`);
+  await until(() => evaluate(`!document.querySelector('.priority-actions button').disabled`), 'stale request ends');
+  assert.equal(await evaluate(`document.querySelector('.mode-pill').textContent`), 'Rules fallback active', 'stale AI result cannot replace current rules');
+  assert.equal(await evaluate(`document.body.textContent.includes('Simulated stale test response')`), false);
+  await click('Reset demo'); await click('Reset demo now');
+  await until(() => evaluate(`document.querySelectorAll('.queue-column .ticket').length === 6`), 'reset after priority tests');
   assert.equal(await evaluate(`(() => { const ticket = document.querySelector('.queue-column .ticket'); const button = ticket.querySelector('button.full'); const t = ticket.getBoundingClientRect(); const b = button.getBoundingClientRect(); return t.height > 200 && b.bottom <= t.bottom; })()`), true, 'queue cards retain their contents inside the scroll area');
   await mkdir('test-results', { recursive: true });
   await screenshot('desktop-queue.png');
@@ -102,7 +123,7 @@ try {
   await evaluate(`document.querySelectorAll('.check-row input').forEach(input => input.click())`);
   await click('Complete manual check');
   await until(() => evaluate(`${order('ON-1041')}.verification?.result === 'manual_checked'`), 'first order rechecked');
-  await evaluate(`document.querySelector('.queue-column .ticket button.full').click()`);
+  await evaluate(`(() => { const ticket = [...document.querySelectorAll('.queue-column .ticket')].find(ticket => ticket.querySelector('h3').textContent === 'IN-1042'); ticket.querySelector('button.full').click(); })()`);
   await click('Finish cooking');
   await until(() => evaluate(`document.querySelector('.packing-ticket h3')?.textContent === 'IN-1042'`), 'second order selected');
   assert.equal(await evaluate(`document.querySelectorAll('.check-row input:checked').length`), 0, 'switching orders cannot copy a check');
@@ -120,7 +141,7 @@ try {
   await click('Reset demo'); await click('Reset demo now');
   await until(() => evaluate(`${stored}.orders.every(o => o.status === 'queued')`), 'clean final demo');
   assert.deepEqual(errors, [], 'no browser errors');
-  console.log('PASS: both sources, full manual journey, readiness guards, refresh persistence, collection, mobile layout, reset, packing order switching, dine-in location, no browser errors.');
+  console.log('PASS: explicit prioritization, no overlapping requests, stale response rejection, actionable queue, both sources, full manual journey, readiness guards, refresh persistence, collection, mobile layout, reset, packing order switching, dine-in location, no browser errors.');
   console.log('Screenshots: test-results/desktop-queue.png, desktop-packing.png, desktop-ready.png, mobile-queue.png');
 } finally {
   if (socket?.readyState === WebSocket.OPEN) socket.close();

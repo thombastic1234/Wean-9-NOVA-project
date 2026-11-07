@@ -38,10 +38,10 @@ export function KitchenBoard() {
   const [now, setNow] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
-  usePriority();
+  const priority = usePriority();
   useEffect(() => { setNow(Date.now()); const timer = setInterval(() => setNow(Date.now()), 30_000); return () => clearInterval(timer); }, []);
   const queued = state.orders.filter(order => order.status === "queued");
-  const ranking = state.ranking?.ranking ?? [];
+  const ranking = priority.ranking.ranking;
   const sortedQueue = [...queued].sort((a, b) => {
     const aRank = ranking.findIndex(row => row.orderId === a.id);
     const bRank = ranking.findIndex(row => row.orderId === b.id);
@@ -83,13 +83,17 @@ export function KitchenBoard() {
         </section>
         <div className="source-toolbar"><div><span className="source-label">SIMULATE AN ORDER</span><span className="toolbar-description">Two sources. One kitchen.</span></div><div className="source-actions"><button className="button secondary" disabled={!state.hydrated} onClick={() => addOrder("waiter")}><Icon name="plus" size={16} />Waiter order</button><button className="button dark" disabled={!state.hydrated} onClick={() => addOrder("online")}><Icon name="plus" size={16} />Online order</button></div></div>
         <PriorityControls settings={state.settings} onChange={settings => dispatch({ type: "settings", settings })} />
+        <div className="priority-actions">
+          <button className="button secondary" disabled={!state.hydrated || priority.loading || !queued.length} onClick={() => void priority.reprioritize()}>Reprioritize</button>
+          <span role="status">{priority.loading ? "Requesting recommendation… Queue remains available." : priority.error ?? (priority.overAiLimit ? "More than 10 queued orders: rules cover the entire queue." : "Recommendations refresh when you click Reprioritize.")}</span>
+        </div>
         {!state.hydrated ? <div className="loading-state" role="status">Restoring your kitchen…</div> : <>
           <div className="workflow-grid">
             <section className="workflow-column queue-column" aria-labelledby="queue-heading">
               <div className="column-heading"><div><span className="stage-dot queue-dot" /><h2 id="queue-heading">Queued</h2><span className="count-pill">{queued.length}</span></div><span className="stage-number">01</span></div>
-              <div className="column-caption"><span className={`mode-pill ${state.ranking?.mode === "ai" ? "ai" : ""}`}>{state.ranking?.mode === "ai" ? "AI PRIORITY" : "DEMO ARRIVAL ORDER"}</span><span>Next up first</span></div>
+              <div className="column-caption"><span className={`mode-pill ${priority.ranking.mode === "ai" ? "ai" : ""}`}>{priority.ranking.mode === "ai" ? "AI recommendation" : "Rules fallback active"}</span><span>Next up first</span></div>
               <div className="ticket-stack">{sortedQueue.map((order, i) => <article className={`ticket ${i === 0 ? "next-ticket" : ""}`} key={order.id}>
-                {i === 0 && <div className="next-label"><span>↗</span> NEXT UP <span>{state.ranking?.mode === "ai" ? "Recommended" : "Arrival order"}</span></div>}
+                {i === 0 && <div className="next-label"><span>↗</span> NEXT UP <span>{priority.ranking.mode === "ai" ? "Recommended" : "Rules ranking"}</span></div>}
                 <div className="ticket-body"><div className="ticket-top"><h3>{order.id}</h3><span className="age"><Icon name="clock" size={12} />{minutes(order.createdAt)}m</span></div><SourceTag order={order} /><Items order={order} />
                   <div className="ticket-details"><span>{order.estimatedPrepMinutes} min prep</span><span>{Date.parse(order.targetReadyAt) < (now || Date.now()) ? "Target overdue" : `Due in ${Math.max(0, Math.ceil((Date.parse(order.targetReadyAt) - (now || Date.now())) / 60_000))}m`}</span></div>
                   {order.courierArrivedAt ? <div className="courier-wait"><span />Courier waiting · {minutes(order.courierArrivedAt)}m</div> : order.fulfillment === "delivery" && <button className="text-button courier-button" onClick={() => dispatch({ type: "courier", orderId: order.id, at: at() })}>Simulate courier arrival</button>}
@@ -128,7 +132,7 @@ export function KitchenBoard() {
             {ready.length ? <div className="pickup-grid">{ready.map(order => <article className="pickup-card" key={order.id}><div className="ticket-top"><h3>{order.id}</h3><span className="ready-label">READY</span></div><SourceTag order={order} /><div className="pickup-identifiers"><div><small>PICKUP CODE</small><strong>{order.pickupCode}</strong></div><div><small>LOCATION</small><strong>{order.handoffLocation}</strong></div></div><button className="button secondary full" onClick={() => dispatch({ type: "collect", orderId: order.id, at: at() })}>Mark collected<Icon name="check" size={16} /></button></article>)}</div> : <div className="pickup-empty"><Icon name="bag" size={22} /><span>No orders waiting for pickup. Completed packing checks land here.</span></div>}
           </section>
         </>}
-        <footer className="page-footer"><span>PASSCHECK <span>·</span> A smoother service, one order at a time.</span><span>Mock sources · {state.ranking?.mode === "ai" ? "AI prioritization" : "Demo prioritization"} · Manual packing</span></footer>
+        <footer className="page-footer"><span>PASSCHECK <span>·</span> A smoother service, one order at a time.</span><span>Mock sources · {priority.ranking.mode === "ai" ? "AI recommendation" : "Rules fallback active"} · Manual packing</span></footer>
       </div>
     </main>
   </div>;
