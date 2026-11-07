@@ -106,7 +106,9 @@ AI failures now show safe, actionable reasons rather than a silent generic fallb
 
 `OPENROUTER_API_KEY` is trimmed and accepts a copied surrounding quote pair or `Bearer ` prefix. Embedded whitespace/control characters are rejected before making a request. Vercel logs receive only the feature, classified error code, static guidance, and upstream HTTP status; raw provider messages, prompts, photos, exception text, and authorization headers are never logged. Set the actual key in Vercel's environment for the deployed environment and redeploy—editing `.env.example` does not configure the hosted server.
 
-Synthetic labeled test images in `tests/fixtures/vision/` are test inputs, not photographs or saved AI responses. Recreate them on Windows with `powershell -File scripts/vision-fixtures.ps1`. Live recognition and model availability are **not verified** without credentials; simulated test results are not live model tests.
+Synthetic labeled test images in `tests/fixtures/vision/` are test inputs, not photographs or saved AI responses. Recreate them on Windows with `powershell -File scripts/vision-fixtures.ps1`. Simulated unit/browser responses are not live model tests.
+
+Deployment verification on 2026-11-07: the deployed key check succeeded, a live priority request returned `mode: "ai"`, and a live image request returned Burger ×1, Fries ×1, and Milkshake ×1 from the synthetic label-card fixture. Both requests used a disposable browser workspace and left existing orders/configuration untouched. This verifies live text/image structured responses for that test; it does not validate real-food recognition, label uncertainty handling, or guarantee future availability/accuracy.
 
 Authenticated optional CLI live smoke checks target **local SQLite mode**, using `PASSCHECK_SMOKE_EMAIL` and `PASSCHECK_SMOKE_PASSWORD` (server-side environment only). Start Next.js with a real OpenRouter key, create relevant test orders, then run:
 
