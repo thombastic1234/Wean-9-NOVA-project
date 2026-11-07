@@ -1,5 +1,7 @@
 # PassCheck
 
+Wean-9-NOVA-project
+
 Person 1's hackathon app: unified waiter/online queue → cooking → packing check → assigned location → ready → collected. One restaurant, one active browser tab, six seeded orders, four menu IDs, no database or authentication.
 
 ## Run locally
