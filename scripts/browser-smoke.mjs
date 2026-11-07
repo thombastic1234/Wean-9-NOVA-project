@@ -40,9 +40,9 @@ async function click(text, scope = 'document') {
   assert.ok(point, `Enabled button: ${text}`); await command('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 }); await command('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
 }
 async function fill(selector, value) { await evaluate(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!element) throw new Error('Missing form element'); const proto = element.tagName === 'SELECT' ? HTMLSelectElement.prototype : element.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto,'value').set.call(element,${JSON.stringify(value)}); element.dispatchEvent(new Event(element.tagName === 'SELECT' ? 'change' : 'input',{bubbles:true})); })()`); }
-async function signIn(user) {
+async function signIn(user, identifier = user.email, secret = password) {
   if (await evaluate(`Boolean(document.querySelector('.roles-header'))`)) { await click('Sign out'); await until(() => evaluate(`Boolean(document.querySelector('.auth-card'))`), 'sign-out'); }
-  await fill('[name=email]', user.email); await fill('[name=password]', password); await click('Sign in');
+  await fill('[name=username]', identifier); await fill('[name=password]', secret); await click('Sign in');
   await until(() => evaluate(`document.querySelector('.identity strong')?.textContent === ${JSON.stringify(user.name)}`), `sign in ${user.role}`);
   await until(() => evaluate(`!document.querySelector('.role-loading')`), 'orders loaded');
 }
@@ -104,7 +104,19 @@ try {
   await stopServer(); startServer(); await until(async () => (await fetch(`${base}/api/session`)).ok, 'server restart');
   await command('Page.reload', { ignoreCache: true }); await until(() => evaluate(`document.querySelector('.identity strong')?.textContent === ${JSON.stringify(accounts.MANAGER.name)}`), 'persisted session after restart');
   assert.equal(repo.get(delivery.id).status, 'COMPLETED'); assert.ok(repo.get(delivery.id).history.some(entry=>entry.action === 'pickup')); assert.deepEqual(errors, [], 'no browser errors');
-  console.log('PASS: five role views; real login/logout; production demo disabled; direct API isolation; source tabs; chef preparation; waiter order creation and embedded photo/manual packaging; driver claim/pickup/delivery; customer ordering/progress; dine-in served without packaging; mobile menu; SQLite orders/history/sessions survive server restart.');
+  for (const username of ['manager', 'customer', 'waiter', 'chef', 'driver']) {
+    const fixed = repo.user(`fixed-${username}`);
+    await signIn(fixed, username, 'password');
+    assert.equal(await evaluate(`document.querySelector('.roles-header nav [aria-current="page"]').textContent.trim()`), fixed.name);
+    assert.equal(await evaluate(`Boolean(document.querySelector('.fixed-account-banner'))`), true);
+    assert.equal(await evaluate(`document.querySelectorAll('.roles-header nav button:not(:disabled)').length`), username === 'manager' ? 5 : 1);
+  }
+  await signIn(repo.user('fixed-manager'), 'manager', 'password');
+  await stopServer(); startServer(); await until(async () => (await fetch(`${base}/api/session`)).ok, 'fixed session server restart');
+  await command('Page.reload', { ignoreCache: true }); await until(() => evaluate(`document.querySelector('.identity strong')?.textContent === 'Manager'`), 'fixed account session survives restart');
+  await shot('fixed-account-login.png');
+  assert.deepEqual(errors, [], 'fixed account logins have no browser errors');
+  console.log('PASS: all five fixed username/password logins in production; fixed sessions survive restart; existing custom accounts; five role views; real login/logout; development switcher disabled in production; direct API isolation; source tabs; chef preparation; waiter creation/packaging; driver claim/pickup/delivery; customer ordering/progress; dine-in served; mobile menu; SQLite persistence.');
   console.log('Screenshots: test-results/manager-view.png, waiter-packaging.png, driver-view.png, customer-view.png, roles-mobile.png, manager-completed.png');
 } catch (error) {
   console.error(error);

@@ -12,9 +12,25 @@ Use **Node.js 24+**. The existing Next.js / React / TypeScript / Zod stack is re
 npm ci
 ```
 
-Copy `.env.example` to `.env.local`. Leave `OPENROUTER_API_KEY` blank to use rules prioritization and manual packing. It always stays server-side. Set `PASSCHECK_DATABASE_PATH` to a writable persistent file; the default is `data/passcheck.sqlite`.
+Copy `.env.example` to `.env.local`. Leave `OPENROUTER_API_KEY` blank to use rules prioritization and manual packing. It always stays server-side. For local order storage, set `PASSCHECK_DATABASE_PATH` to a writable persistent file; the default is `data/passcheck.sqlite`.
 
-Create each account using the server CLI. It prompts for a password without echoing it (minimum 12 characters):
+The five requested fixed accounts are available immediately, including in production builds. No CLI account creation or development-mode flag is required:
+
+| Username | Password | View |
+| --- | --- | --- |
+| manager | password | Manager (all views) |
+| customer | password | Customer |
+| waiter | password | Waiter |
+| chef | password | Chef |
+| driver | password | Driver |
+
+These are shared demonstration identities, not private individual accounts. The login form accepts a username; existing custom account emails continue to work. Fixed credentials and roles are defined server-side in `src/server/fixedAccounts.ts`.
+
+```sh
+npm run dev
+```
+
+Open http://127.0.0.1:3000 and sign in with one of the usernames above. Optional custom accounts can still be created using the server CLI, which prompts for a password without echoing it (minimum 12 characters):
 
 ```sh
 npm run account -- --role MANAGER --email manager@example.com --name Manager
@@ -22,10 +38,11 @@ npm run account -- --role CUSTOMER --email customer@example.com --name Customer
 npm run account -- --role WAITER --email waiter@example.com --name Waiter
 npm run account -- --role CHEF --email chef@example.com --name Chef
 npm run account -- --role DRIVER --email driver@example.com --name Driver
-npm run dev
 ```
 
-Open http://127.0.0.1:3000 and sign in. There are **no default production passwords**, public role registration, or production role-switch endpoints. The account command loads `.env.local` so it uses the same database as Next.js. For noninteractive account setup, supply `PASSCHECK_ACCOUNT_PASSWORD` through the server environment; never put it in a `NEXT_PUBLIC_` variable or commit it.
+The optional account command loads `.env.local` so it uses the same database as Next.js. For noninteractive custom-account setup, supply `PASSCHECK_ACCOUNT_PASSWORD` through the server environment; never put it in a `NEXT_PUBLIC_` variable or commit it.
+
+**Vercel:** fixed-account sign-in, session checks, and browser logout do not initialize or write SQLite. Fixed sessions are signed, expire after eight hours, and work across function instances and restarts. `PASSCHECK_SESSION_SECRET` optionally replaces the shared demo signing key; use the same server-side value across deployments. This authentication change does **not** migrate order storage: orders, assignments, custom accounts, settings, and history still require the existing writable SQLite database. A hosted database backend is still needed for reliable Vercel order operations; changing credentials does not fix that storage constraint.
 
 For production-mode rehearsal: `npm run build`, then `npm start`. Production requires HTTPS outside localhost and a persistent writable disk. This SQLite implementation targets one restaurant on a single Node server, not ephemeral serverless storage or independent replicas. Back up the SQLite database and its WAL consistently. Users, sessions, orders, and settings are local data and are excluded from Git.
 
@@ -35,7 +52,7 @@ On this Windows machine, the portable runtime used for checks is `%TEMP%\passche
 
 Set `PASSCHECK_DEMO_MODE=true` in `.env.local`, then run **`npm run dev`**. The clearly labeled development control signs in simulated manager, customer, waiter, chef, and driver accounts; alternate customer/driver identities make isolation easy to check. It seeds six orders. The manager can reset development orders and preferences. This reset deletes the development database's orders, so use a separate `PASSCHECK_DATABASE_PATH` for a demo.
 
-Both demo endpoints return 404 under `npm start` / production, even if the environment flag is true. Persisted demo-account sessions are also rejected whenever demo mode is disabled or the server runs in production. Real account permissions come only from the session's database user, never from a selected view, request body, or URL.
+Both development-switcher endpoints return 404 under `npm start` / production, even if the environment flag is true. Persisted development-switcher sessions are also rejected whenever demo mode is disabled or the server runs in production. The five fixed username/password accounts are separate and remain available in production. Permissions come from server-defined fixed identities or a custom account's database role, never from a selected view, request body, or URL.
 
 ## Views and workflows
 
@@ -57,7 +74,7 @@ Managers may cancel active orders with a reason. Cancelled/completed orders cann
 
 ## Persistence, permissions, and concurrency
 
-`src/server/database.ts` creates schema migration **1** on first use: users, hashed sessions, bounded sign-in attempts, orders, idempotent requests, and restaurant settings. Passwords use salted scrypt; session cookies are HttpOnly, SameSite Strict, expire after eight hours, and use Secure in production. Logout revokes the server session. Mutations reject cross-origin browser requests.
+`src/server/database.ts` creates schema migration **1** on first use: users, hashed sessions, bounded custom-account sign-in attempts, orders, idempotent requests, and restaurant settings. It idempotently registers the five fixed identities for ownership/assignment foreign keys. Custom passwords use salted scrypt; all session cookies are HttpOnly, SameSite Strict, expire after eight hours, and use Secure in production. Custom-account logout revokes the stored session. Fixed-account logout clears the browser cookie; a copied signed demo token remains valid until expiry. Mutations reject cross-origin browser requests.
 
 All order reads, source/fulfillment/status/date filtering, ownership checks, driver assignment checks, workflow validation, checks, totals, and timestamps run on the backend. Staff directory, preferences, prioritization, and photo verification also require appropriate sessions. Customer ownership is applied in SQL before any data is returned. IDs for inaccessible orders return 404.
 

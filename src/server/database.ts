@@ -6,6 +6,7 @@ import { z } from "zod";
 import { DEFAULT_SETTINGS, orderSchema, settingsSchema, verificationSchema, type Settings } from "../lib/contracts";
 import { ACTIONS, allowedActions, canReadOrder, createOrderSchema, MENU_PRICES, packingIsComplete, type OperationalOrder, type Role, type User, type Operation } from "../lib/operations";
 import { CATALOG } from "../lib/catalog";
+import { FIXED_ACCOUNTS, FIXED_PASSWORD } from "./fixedAccounts";
 
 export class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -25,6 +26,12 @@ export class Repository {
       CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY CHECK(id=1), document TEXT NOT NULL);
       INSERT OR IGNORE INTO schema_migrations VALUES(1,datetime('now'));`);
     this.db.prepare("INSERT OR IGNORE INTO settings VALUES(1,?)").run(JSON.stringify(DEFAULT_SETTINGS));
+    // Fixed identities must exist for order ownership/assignment foreign keys.
+    // Login/session validation itself does not read or write this database.
+    const salt = "passcheck-fixed-demo-accounts";
+    const hash = scryptSync(FIXED_PASSWORD, salt, 64).toString("hex");
+    const insertAccount = this.db.prepare("INSERT OR IGNORE INTO users VALUES(?,?,?,?,?,?)");
+    for (const { user } of FIXED_ACCOUNTS) insertAccount.run(user.id, user.email, user.name, user.role, hash, salt);
   }
   user(id: string): User | undefined {
     return this.db.prepare("SELECT id,name,email,role FROM users WHERE id=?").get(id) as User | undefined;

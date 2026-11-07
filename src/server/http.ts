@@ -2,13 +2,16 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { getRepository, HttpError } from "./database";
 import type { OperationalOrder, Role, User } from "../lib/operations";
+import { createFixedSession, fixedAccount, fixedSessionUser, isFixedSession } from "./fixedAccounts";
 
 export const COOKIE_NAME = "passcheck_session";
 export function sessionToken(request: Request) {
   return (request.headers.get("cookie") ?? "").split(";").map(part => part.trim()).find(part => part.startsWith(`${COOKIE_NAME}=`))?.slice(COOKIE_NAME.length + 1);
 }
 export function requireUser(request: Request, roles?: readonly Role[]): User {
-  const user = getRepository().sessionUser(sessionToken(request));
+  const token = sessionToken(request);
+  if (!token) throw new HttpError(401, "Sign in to continue");
+  const user = isFixedSession(token) ? fixedSessionUser(token) : getRepository().sessionUser(token);
   if (!user || (user.id.startsWith("demo-") && !demoEnabled())) throw new HttpError(401, "Sign in to continue");
   if (roles && !roles.includes(user.role)) throw new HttpError(403, "Your account cannot access this feature");
   return user;
@@ -49,7 +52,7 @@ export async function body(request: Request, limit = 100_000): Promise<unknown> 
 }
 export function withSession(request: Request, user: User) {
   const response = json({ user });
-  response.cookies.set(COOKIE_NAME, getRepository().session(user.id), { httpOnly: true, secure: process.env.NODE_ENV === "production" || new URL(request.url).protocol === "https:", sameSite: "strict", path: "/", maxAge: 8 * 60 * 60 });
+  response.cookies.set(COOKIE_NAME, fixedAccount(user.id) ? createFixedSession(user) : getRepository().session(user.id), { httpOnly: true, secure: process.env.NODE_ENV === "production" || new URL(request.url).protocol === "https:", sameSite: "strict", path: "/", maxAge: 8 * 60 * 60 });
   return response;
 }
 export function demoEnabled() { return process.env.NODE_ENV !== "production" && process.env.PASSCHECK_DEMO_MODE === "true"; }
