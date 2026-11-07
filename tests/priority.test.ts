@@ -101,8 +101,11 @@ test("valid AI response is labeled in code and hard rule overrides it", async t 
 });
 
 test("no key, empty queues and more than ten orders use rules without API calls", async t => {
+  t.mock.method(console, "warn", () => {});
   t.mock.method(globalThis, "fetch", () => { throw new Error("Must not call provider"); });
-  assert.deepEqual(await prioritizeOrders(priorityDemo), fallbackRanking(priorityDemo));
+  const missingKey = await prioritizeOrders(priorityDemo);
+  assert.deepEqual(missingKey.ranking, fallbackRanking(priorityDemo).ranking);
+  assert.equal(missingKey.diagnostic?.code, "missing_key");
   const empty = { ...priorityDemo, orders: [] };
   assert.deepEqual(await prioritizeOrders(empty, "test-key"), fallbackRanking(empty));
   const oversized = { ...priorityDemo, orders: Array.from({ length: 11 }, (_, i) => ({ ...priorityDemo.orders[0], orderId: String(i) })) };
@@ -110,6 +113,7 @@ test("no key, empty queues and more than ten orders use rules without API calls"
 });
 
 test("AI failures always fall back once: HTTP, network, JSON, IDs, version, reasons, truncation", async t => {
+  t.mock.method(console, "warn", () => {});
   const cases = [
     () => new Response("rate limited", { status: 429 }),
     () => new Response("unsupported schema", { status: 400 }),
@@ -126,13 +130,16 @@ test("AI failures always fall back once: HTTP, network, JSON, IDs, version, reas
   ];
   for (const run of cases) {
     const mock = t.mock.method(globalThis, "fetch", run);
-    assert.deepEqual(await prioritizeOrders(priorityDemo, "test-key"), fallbackRanking(priorityDemo));
+    const result = await prioritizeOrders(priorityDemo, "test-key");
+    assert.deepEqual({ ...result, diagnostic: undefined }, { ...fallbackRanking(priorityDemo), diagnostic: undefined });
+    assert.ok(result.diagnostic?.message);
     assert.equal(mock.mock.callCount(), 1, "no retries");
     mock.mock.restore();
   }
 });
 
 test("server deadline aborts after eight seconds even when fetch ignores abort", async t => {
+  t.mock.method(console, "warn", () => {});
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let signal: AbortSignal | undefined;
   t.mock.method(globalThis, "fetch", (_url: unknown, init: RequestInit) => {
@@ -143,7 +150,9 @@ test("server deadline aborts after eight seconds even when fetch ignores abort",
   t.mock.timers.tick(PRIORITY_TIMEOUT_MS - 1);
   assert.equal(signal?.aborted, false);
   t.mock.timers.tick(1);
-  assert.deepEqual(await result, fallbackRanking(priorityDemo));
+  const response = await result;
+  assert.deepEqual(response.ranking, fallbackRanking(priorityDemo).ranking);
+  assert.equal(response.diagnostic?.code, "timeout");
   assert.equal(signal?.aborted, true);
 });
 

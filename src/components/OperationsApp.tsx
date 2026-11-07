@@ -7,6 +7,7 @@ import { allowedActions, canViewRole, FULFILLMENTS, FULFILLMENT_LABELS, formatMo
 import { OrderForm } from "./OrderForm";
 import { PriorityControls } from "./PriorityControls";
 import { ServerPackingPanel } from "./ServerPackingPanel";
+import type { AiDiagnostic } from "@/lib/aiDiagnostics";
 
 const label = (value: string) => value.charAt(0) + value.slice(1).toLowerCase();
 const time = (value?: string | null) => value ? new Date(value).toLocaleString() : "—";
@@ -21,6 +22,7 @@ export function OperationsApp() {
   const [user, setUser] = useState<User | null>(null); const [sessionLoading, setSessionLoading] = useState(true);
   const [demo, setDemo] = useState(false); const [view, setView] = useState<Role>("CUSTOMER");
   const [browserDemo, setBrowserDemo] = useState(false);
+  const [aiConnection, setAiConnection] = useState<{ ok: boolean; message?: string; diagnostic?: AiDiagnostic } | null>(null);
   const [source, setSource] = useState<typeof SOURCES[number]>("IN_PERSON");
   const [orders, setOrders] = useState<OperationalOrder[]>([]); const [users, setUsers] = useState<AccountOption[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS); const [busy, setBusy] = useState<string | null>(null);
@@ -34,6 +36,7 @@ export function OperationsApp() {
   const queryKeyRef = useRef(queryKey); queryKeyRef.current = queryKey;
   const renderIdentity = identity.current;
   const rememberUser = (account: User | null) => {
+    setAiConnection(null);
     identity.current++; setUser(account); setOrders([]); setUsers([]); setError(""); setNotice(""); setStatus(""); setFulfillment(""); setDate(""); setCustomerId(""); setPackingId(null); setRanking(null);
     if (account) { setView(account.role); setSource(account.role === "CUSTOMER" || account.role === "DRIVER" ? "ONLINE" : "IN_PERSON"); }
   };
@@ -140,12 +143,14 @@ export function OperationsApp() {
       {(view === "WAITER" || view === "CUSTOMER" || view === "MANAGER") && <OrderForm key={`${user.id}:${view}`} user={user} customerMode={view === "CUSTOMER"} users={users as User[]} onCreated={order => { receiveOrder(order); setSource(order.source); setNotice(`Order ${order.id} placed.`); void load(true); }} />}
       {view === "MANAGER" && <><div className="manager-stats">{[{ name: "Awaiting preparation", count: queued.length }, { name: "Being prepared", count: orders.filter(order => order.status === "PREPARING").length }, { name: "Packaging / serving", count: orders.filter(order => ["READY_TO_PACKAGE", "PACKAGING", "READY_TO_SERVE", "READY_FOR_PICKUP"].includes(order.status)).length }, { name: "Out for delivery", count: orders.filter(order => order.status === "OUT_FOR_DELIVERY").length }, { name: "Completed / cancelled", count: completed.length }].map(stat => <div key={stat.name}><span>{stat.name}</span><strong>{stat.count}</strong></div>)}</div>
         <fieldset disabled={busy !== null}><PriorityControls settings={settings} onChange={value => void run("settings", async () => { const saved = await api<{ settings: Settings }>("/api/settings", { method: "PUT", body: JSON.stringify(value) }); setSettings(saved.settings); })} /></fieldset>
+        <div className="ai-connection"><div><strong>Live AI connection</strong><p>Check the server’s OpenRouter key without running a model request.</p></div><button className="button secondary" disabled={busy !== null} onClick={() => void run("ai-check", async () => setAiConnection(await api("/api/ai/status")))}>{busy === "ai-check" ? "Checking…" : "Check AI connection"}</button>{aiConnection && <p className={`ai-connection-result ${aiConnection.ok ? "ok" : "unavailable"}`} role="status">{aiConnection.message ?? aiConnection.diagnostic?.message}{aiConnection.diagnostic?.upstreamStatus && <span>OpenRouter HTTP {aiConnection.diagnostic.upstreamStatus}</span>}</p>}</div>
         <div className="manager-tools"><button className="text-button" disabled={busy !== null} onClick={() => void run("import", async () => { const raw = localStorage.getItem("passcheck.demo.v1"); if (!raw) throw new Error("No browser demo is available to import"); const saved = JSON.parse(raw); const result = await api<{ imported: number }>("/api/orders/import", { method: "POST", body: JSON.stringify({ orders: saved.orders }) }); setNotice(`Imported ${result.imported} legacy orders. Ownership and history remain unknown until explicitly associated.`); await load(); })}>Import this browser’s previous demo orders</button><span>Imported orders keep known timestamps; historical prices and staff are marked unavailable.</span></div>
       </>}
       <div className="source-tabs" role="tablist" aria-label="Order source">{SOURCES.map(value => <button key={value} role="tab" aria-selected={source === value} onClick={() => setSource(value)}>{SOURCE_LABELS[value]}</button>)}</div>
       {view === "MANAGER" && <div className="order-filters"><label>Status<select value={status} onChange={event => setStatus(event.target.value)}><option value="">All stages</option>{STATUSES.map(value => <option value={value} key={value}>{STATUS_LABELS[value]}</option>)}</select></label><label>Fulfillment<select value={fulfillment} onChange={event => setFulfillment(event.target.value)}><option value="">All methods</option>{FULFILLMENTS.map(value => <option key={value} value={value}>{FULFILLMENT_LABELS[value]}</option>)}</select></label><label>Placed date (UTC)<input type="date" value={date} onChange={event => setDate(event.target.value)} /></label><button className="text-button" onClick={() => { setStatus(""); setFulfillment(""); setDate(""); }}>Clear filters</button></div>}
       {view === "CUSTOMER" && user.role === "MANAGER" && <label className="customer-preview">Customer preview<select value={customerId} onChange={event => setCustomerId(event.target.value)}><option value="">Choose a customer</option>{users.filter(account => account.role === "CUSTOMER").map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>}
       {loading ? <p className="role-loading" role="status">Loading orders…</p> : <>
+        {view === "CHEF" && currentRanking.diagnostic && <p className="ai-diagnostic" role="status">{currentRanking.diagnostic.message} Rules fallback remains active.</p>}
         {view === "MANAGER" && section("All orders", orders)}
         {view === "CUSTOMER" && <>{section("Active orders", active, true)}{section("Completed orders", completed, true)}</>}
         {view === "CHEF" && <><div className="chef-priority"><span>{currentRanking.mode === "ai" ? "AI recommendation" : "Rules fallback active"} · oldest first by default</span><button className="button secondary" disabled={busy !== null || !queued.length} onClick={() => void run("priority", async () => { const version = ++priorityVersion.current; const data = await api<PriorityResponse>("/api/prioritize", { method: "POST", body: JSON.stringify(makePriorityRequest(queued.map(toPackingOrder), settings, version)) }); if (version === priorityVersion.current) setRanking(data); })}>Reprioritize</button></div>{section("Ready to prepare", ranking?.requestVersion === priorityVersion.current ? [...queued].sort((a, b) => currentRanking.ranking.findIndex(row => row.orderId === a.id) - currentRanking.ranking.findIndex(row => row.orderId === b.id)) : queued)}{section("Currently preparing", orders.filter(order => order.status === "PREPARING"))}</>}

@@ -1,13 +1,11 @@
 import { z } from "zod";
 import { priorityResponseSchema, type PriorityRequest, type PriorityResponse } from "./contracts";
 import { applyMaximumWait, fallbackRanking, hasCompleteRanking, MAX_AI_ORDERS, PRIORITY_TIMEOUT_MS } from "./priority";
+import { OpenRouterError, openRouterCompletion, reportAiFailure } from "../server/openRouter";
 
 // Imported only by the server route and local smoke test. Credentials are passed by the server.
 export const PRIORITY_MODEL = "google/gemini-2.5-flash";
-const aiResponseSchema = priorityResponseSchema.omit({ mode: true }).strict();
-const envelopeSchema = z.object({
-  choices: z.array(z.object({ message: z.object({ content: z.string() }), finish_reason: z.literal("stop") })).min(1),
-});
+const aiResponseSchema = priorityResponseSchema.omit({ mode: true, diagnostic: true }).strict();
 
 export function buildPriorityCompletion(request: PriorityRequest) {
   return {
@@ -28,28 +26,22 @@ export function buildPriorityCompletion(request: PriorityRequest) {
 export async function prioritizeOrders(request: PriorityRequest, apiKey?: string): Promise<PriorityResponse> {
   const fallback = fallbackRanking(request);
   // Oversized queues remain fully actionable using rules; never drop tickets to fit the AI limit.
-  if (!apiKey?.trim() || !request.orders.length || request.orders.length > MAX_AI_ORDERS) return fallback;
+  if (!request.orders.length || request.orders.length > MAX_AI_ORDERS) return fallback;
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => { controller.abort(); reject(new Error("Priority timeout")); }, PRIORITY_TIMEOUT_MS);
+    timer = setTimeout(() => { controller.abort(); reject(new OpenRouterError("timeout")); }, PRIORITY_TIMEOUT_MS);
   });
   try {
     const completion = (async () => {
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify(buildPriorityCompletion(request)), signal: controller.signal,
-      });
-      if (!response.ok) throw new Error("Priority provider unavailable");
-      const envelope = envelopeSchema.parse(await response.json());
-      const result = aiResponseSchema.parse(JSON.parse(envelope.choices[0].message.content));
-      if (!hasCompleteRanking(request, result)) throw new Error("Invalid ranking membership or version");
+      const content = await openRouterCompletion(buildPriorityCompletion(request), apiKey, controller.signal);
+      const result = aiResponseSchema.parse(JSON.parse(content));
+      if (!hasCompleteRanking(request, result)) throw new OpenRouterError("invalid_response");
       return { requestVersion: request.requestVersion, mode: "ai" as const, ranking: applyMaximumWait(request, result.ranking) };
     })();
     return await Promise.race([completion, deadline]);
-  } catch {
-    // Errors and provider bodies may contain sensitive details. Return only deterministic facts.
-    return fallback;
+  } catch (error) {
+    return { ...fallback, diagnostic: reportAiFailure("priority", error) };
   } finally {
     clearTimeout(timer);
   }

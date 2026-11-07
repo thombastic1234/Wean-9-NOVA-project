@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CATALOG, MENU_IDS } from "./catalog";
 import { countSchema, verifyRequestSchema, visionResponseSchema, type VisionResponse } from "./contracts";
+import { OpenRouterError, openRouterCompletion, reportAiFailure } from "../server/openRouter";
 
 // Server route only; credentials never enter the browser.
 export const VISION_MODEL = "google/gemini-2.5-flash";
@@ -15,9 +16,6 @@ export const observationSchema = observationShape.refine(
   value => new Set(value.observed.map(item => item.menuItemId)).size === value.observed.length,
   "Duplicate observed menu IDs",
 );
-const envelopeSchema = z.object({ choices: z.array(z.object({
-  message: z.object({ content: z.string() }), finish_reason: z.literal("stop"),
-})).min(1) });
 
 export function compareObservation(request: VerifyRequest, input: unknown): VisionResponse {
   const observation = observationSchema.parse(input);
@@ -59,26 +57,19 @@ function review(request: VerifyRequest, explanation: string): VisionResponse {
 }
 
 export async function verifyPhoto(request: VerifyRequest, apiKey?: string): Promise<VisionResponse> {
-  if (!apiKey?.trim()) return review(request, "Live vision is unavailable: no server API key. Complete the manual checklist.");
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => { timedOut = true; controller.abort(); reject(new Error("Vision timeout")); }, VISION_TIMEOUT_MS);
+    timer = setTimeout(() => { controller.abort(); reject(new OpenRouterError("timeout")); }, VISION_TIMEOUT_MS);
   });
   try {
     const completion = (async () => {
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify(buildVisionCompletion(request.imageDataUrl)), signal: controller.signal,
-      });
-      if (!response.ok) throw new Error("Provider failure");
-      const envelope = envelopeSchema.parse(await response.json());
-      return compareObservation(request, JSON.parse(envelope.choices[0].message.content));
+      const content = await openRouterCompletion(buildVisionCompletion(request.imageDataUrl), apiKey, controller.signal);
+      return compareObservation(request, JSON.parse(content));
     })();
     return await Promise.race([completion, deadline]);
-  } catch {
-    return review(request, timedOut ? "Live vision timed out after 12 seconds. Recheck or complete the manual checklist."
-      : "Live vision failed or returned invalid observations. Recheck or complete the manual checklist.");
+  } catch (error) {
+    const diagnostic = reportAiFailure("vision", error);
+    return review(request, `${diagnostic.message} Complete the manual checklist or recheck later.`);
   } finally { clearTimeout(timer); }
 }

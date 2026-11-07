@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MENU_IDS } from "./catalog";
+import { aiDiagnosticSchema } from "./aiDiagnostics";
 
 const timestamp = z.iso.datetime({ offset: true });
 const quantity = z.number().int().nonnegative().max(100);
@@ -52,6 +53,7 @@ export const priorityRequestSchema = z.object({
 export const priorityResponseSchema = z.object({
   requestVersion: z.number().int().nonnegative(), mode: z.enum(["ai", "fallback"]),
   ranking: z.array(z.object({ orderId: z.string().min(1), reason: z.string().trim().min(1).max(240) })),
+  diagnostic: aiDiagnosticSchema.optional(),
 });
 export type PriorityRequest = z.infer<typeof priorityRequestSchema>;
 export type PriorityResponse = z.infer<typeof priorityResponseSchema>;

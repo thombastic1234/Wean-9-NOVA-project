@@ -58,6 +58,7 @@ test("valid provider output produces fresh per-scan counts with server IDs", asy
   assert.equal(second.result, "mismatch");
 });
 test("failures and invalid output never fabricate observations or missing counts", async t => {
+  t.mock.method(console, "warn", () => {});
   const cases = [
     async () => { throw new Error("sensitive provider detail"); },
     async () => new Response("private", { status: 401 }),
@@ -80,6 +81,7 @@ test("failures and invalid output never fabricate observations or missing counts
   assert.equal((await verifyPhoto(request)).result, "review_needed");
 });
 test("12-second deadline aborts request and bounds hung body parsing", async t => {
+  t.mock.method(console, "warn", () => {});
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let signal: AbortSignal | undefined;
   t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {

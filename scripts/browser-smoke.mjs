@@ -71,7 +71,8 @@ try {
   socket.addEventListener('message', event => { const message = JSON.parse(event.data); if (message.id) { const item = pending.get(message.id); if (item) { pending.delete(message.id); message.error ? item.reject(new Error(message.error.message)) : item.resolve(message.result); } } if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text); if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') errors.push(message.params.args.map(arg => arg.value || arg.description).join(' ')); });
   await command('Runtime.enable'); await command('Page.enable'); await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
   await command('Page.navigate', { url: base }); await until(() => evaluate(`Boolean(document.querySelector('.auth-card'))`), 'login screen'); await mkdir('test-results', { recursive: true });
-  await signIn(accounts.MANAGER); assert.equal(await evaluate(`document.querySelectorAll('.roles-header nav button:not(:disabled)').length`), 5); await shot('manager-view.png');
+  await signIn(accounts.MANAGER); assert.equal(await evaluate(`document.querySelectorAll('.roles-header nav button:not(:disabled)').length`), 5);
+  await click('Check AI connection'); await until(() => evaluate(`document.querySelector('.ai-connection-result')?.textContent.includes('No server OpenRouter API key')`), 'manager sees actionable missing-key status'); await shot('manager-view.png');
   await signIn(accounts.CHEF); assert.equal(await evaluate(`document.querySelectorAll('.roles-header nav button:not(:disabled)').length`), 1);
   await click('Online Orders'); await until(() => evaluate(`Boolean(${scope(delivery.id)})`), 'online chef ticket');
   await click('Reprioritize'); await until(() => evaluate(`!document.querySelector('.operation-error') && !document.querySelector('.chef-priority button').disabled`), 'authenticated priority fallback');
@@ -126,6 +127,7 @@ try {
   await command('Page.reload', { ignoreCache: true });
   await until(() => evaluate(`Boolean(document.querySelector('.browser-storage-banner')) && !document.querySelector('.role-loading')`), 'automatic browser storage');
   await until(() => evaluate(`!document.querySelector('.operation-error')`), 'no missing-directory error');
+  await click('Check AI connection'); await until(() => evaluate(`document.querySelector('.ai-connection-result')?.textContent.includes('No server OpenRouter API key')`), 'AI connection check works without a Vercel file database');
   assert.equal(await evaluate(`document.querySelectorAll('.op-order').length`), 0, 'browser workspace starts independently of local SQLite');
   await signIn(repo.user('fixed-customer'), 'customer', 'password');
   await fill('[aria-label="Burger quantity"]', '1'); await fill('[aria-label="Milkshake quantity"]', '1');
