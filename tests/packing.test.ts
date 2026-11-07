@@ -7,7 +7,7 @@ const request: PhotoCheckRequest = {
   expectedItems: [
     { menuItemId: "burger", name: "Burger", quantity: 1 },
     { menuItemId: "fries", name: "Fries", quantity: 1 },
-    { menuItemId: "cola", name: "Cola", quantity: 1 },
+    { menuItemId: "milkshake", name: "Milkshake", quantity: 1 },
   ],
 };
 const match = { orderId: request.orderId, scanId: request.scanId, result: "match", observed: request.expectedItems.map(({ menuItemId, quantity }) => ({ menuItemId, quantity })), missing: [], extra: [], unknownItems: [], uncertainties: [] };
@@ -25,12 +25,12 @@ test("photo client sends agreed IDs/counts and accepts a simulated match", async
   assert.deepEqual(await checkPackingPhoto(request, signal()), match);
 });
 
-test("simulated missing fries and extra cola are preserved, then replaced by a new scan", async t => {
-  const mismatch = { ...match, result: "mismatch", observed: [{ menuItemId: "burger", quantity: 1 }, { menuItemId: "cola", quantity: 2 }], missing: [{ menuItemId: "fries", quantity: 1 }], extra: [{ menuItemId: "cola", quantity: 1 }] };
+test("simulated missing fries and extra milkshake are preserved, then replaced by a new scan", async t => {
+  const mismatch = { ...match, result: "mismatch", observed: [{ menuItemId: "burger", quantity: 1 }, { menuItemId: "milkshake", quantity: 2 }], missing: [{ menuItemId: "fries", quantity: 1 }], extra: [{ menuItemId: "milkshake", quantity: 1 }] };
   t.mock.method(globalThis, "fetch", async () => Response.json(mismatch));
   const first = await checkPackingPhoto(request, signal());
   assert.deepEqual(first.missing, [{ menuItemId: "fries", quantity: 1 }]);
-  assert.deepEqual(first.extra, [{ menuItemId: "cola", quantity: 1 }]);
+  assert.deepEqual(first.extra, [{ menuItemId: "milkshake", quantity: 1 }]);
   t.mock.method(globalThis, "fetch", async () => Response.json({ ...match, scanId: "scan-2" }));
   const second = await checkPackingPhoto({ ...request, scanId: "scan-2" }, signal());
   assert.equal(second.result, "match");
@@ -42,7 +42,7 @@ test("invalid, mismatched, stale, or unsupported success results are rejected", 
   for (const body of [
     {}, { ...match, result: "manual_checked" }, { ...match, orderId: "another-order" },
     { ...match, scanId: "old-scan" }, { ...match, observed: [] },
-    { ...match, observed: [...match.observed, { menuItemId: "cola", quantity: 1 }] },
+    { ...match, observed: [...match.observed, { menuItemId: "milkshake", quantity: 1 }] },
     { ...match, unknownItems: ["opaque container"] }, { ...match, uncertainties: ["occluded"] },
   ]) {
     t.mock.method(globalThis, "fetch", async () => Response.json(body));

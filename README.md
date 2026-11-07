@@ -30,7 +30,9 @@ If Node is unavailable on PATH in this Windows session, the verified portable ru
 
 ## Team integration
 
-Contracts are in `src/lib/contracts.ts`; catalog IDs/names are in `src/lib/catalog.ts`. No alternate shared contract existed in the empty workspace. The catalog includes visual descriptions for visible food and labeled demo props. IDs stay `burger`, `fries`, `cola`, `cookie`.
+Contracts are in `src/lib/contracts.ts`; catalog IDs/names are in `src/lib/catalog.ts`. No alternate shared contract existed in the empty workspace. The catalog includes visual descriptions for visible food and labeled demo props. IDs stay `burger`, `fries`, `milkshake`, `salad`.
+
+The test menu is **Burger, Fries, Milkshake, and Salad**. Saved demos containing menu IDs outside this catalog load fresh demo orders on refresh; old packing checks are never reused for the replacement items.
 
 **Person 2 delivered:** `src/app/api/prioritize/route.ts`, server-only usage of `src/lib/priorityService.ts`, browser-safe pure helpers in `src/lib/priority.ts`, `src/lib/priorityClient.ts`, `usePriority`, and settings controls. `PriorityControls` retains `settings` / `onChange`. `usePriority()` returns `{ ranking, loading, error, reprioritize, overAiLimit }`; the board uses this ranking so rules are available even if the local server is offline. Person 1's reducer, ingestion, status transitions, and order schema are unchanged. `requestVersion` changes on queued membership, courier arrival, settings, reset, and explicit Reprioritize (which refreshes durations). The old 30-second automatic API refresh was removed; display clocks still update.
 
@@ -96,14 +98,14 @@ The server sends only the full catalog and one image to `google/gemini-2.5-flash
 
 Provider format references: [OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs) and [image inputs](https://openrouter.ai/docs/guides/overview/multimodal/image-understanding). Actual model/provider image and schema support remains unverified until the live smoke test passes.
 
-Fixtures in `tests/fixtures/vision/` are **synthetic label cards**, not real food photos or prerecorded AI results. Each expected order is burger x1, fries x1, cola x1:
+Fixtures in `tests/fixtures/vision/` are **synthetic label cards**, not real food photos or prerecorded AI results. Each expected order is burger x1, fries x1, milkshake x1:
 
 | Input | Visible cards | Expected handling |
 | --- | --- | --- |
-| correct.png | BURGER, FRIES, COLA | Counts agree; label uncertainty requires review |
-| missing.png | BURGER, COLA | Missing fries; mismatch |
-| extra.png | BURGER, FRIES, COLA, COOKIE | Extra cookie; mismatch |
-| unclear.png | BURGER, FRIES, COLA, ??? | Unknown card; review |
+| correct.png | BURGER, FRIES, MILKSHAKE | Counts agree; label uncertainty requires review |
+| missing.png | BURGER, MILKSHAKE | Missing fries; mismatch |
+| extra.png | BURGER, FRIES, MILKSHAKE, SALAD | Extra salad; mismatch |
+| unclear.png | BURGER, FRIES, MILKSHAKE, ??? | Unknown card; review |
 
 Recreate fixtures on Windows with `powershell -File scripts/vision-fixtures.ps1`. Use these as image inputs, or photograph actual demo props laid out separately in good light. Before rehearsal, compare catalog descriptions against the team's actual props. Do not claim these fixtures validate food recognition.
 
@@ -111,7 +113,7 @@ For a live check, copy `.env.example` to `.env.local`, set the server-only key, 
 
 ```sh
 node scripts/vision-smoke.mjs
-# Or provide a real photo (expected burger/fries/cola x1):
+# Or provide a real photo (expected burger/fries/milkshake x1):
 node scripts/vision-smoke.mjs path/to/photo.jpg
 ```
 

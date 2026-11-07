@@ -143,7 +143,7 @@ try {
 
   // Packing acceptance uses simulated vision results, never a live recognition claim.
   await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
-  await evaluate(`(() => { const state = ${stored}; state.orders[0].items = [{menuItemId:'burger',name:'Burger',quantity:1},{menuItemId:'fries',name:'Fries',quantity:1},{menuItemId:'cola',name:'Cola',quantity:1}]; localStorage.setItem('passcheck.demo.v1', JSON.stringify(state)); })()`);
+  await evaluate(`(() => { const state = ${stored}; state.orders[0].items = [{menuItemId:'burger',name:'Burger',quantity:1},{menuItemId:'fries',name:'Fries',quantity:1},{menuItemId:'milkshake',name:'Milkshake',quantity:1}]; localStorage.setItem('passcheck.demo.v1', JSON.stringify(state)); })()`);
   await command('Page.reload', { ignoreCache: true });
   await until(() => evaluate(`document.querySelectorAll('.queue-column .ticket').length === 6`), 'packing fixture reload');
   await evaluate(`document.querySelector('.queue-column .ticket button.full').click()`);
@@ -156,19 +156,19 @@ try {
   assert.equal(await evaluate(`document.querySelector('.seal-check input').disabled`), true);
   assert.equal(await evaluate(`document.querySelector('.packing-manual').disabled`), false, 'manual fallback remains available');
 
-  await evaluate(`window.__visionCalls = 0; window.__visionFetch = window.fetch; window.fetch = (url, options) => { if (url !== '/api/verify') return window.__visionFetch(url, options); window.__visionCalls++; const request = JSON.parse(options.body); window.__lastVisionRequest = request; return new Promise((resolve,reject) => { window.__resolveVision = response => resolve(new Response(JSON.stringify({orderId:request.orderId,scanId:request.scanId,...response}),{headers:{'Content-Type':'application/json'}})); options.signal.addEventListener('abort', () => reject(new DOMException('Aborted','AbortError'))); }); }; window.__match = { result:'match', observed:[{menuItemId:'burger',quantity:1},{menuItemId:'fries',quantity:1},{menuItemId:'cola',quantity:1}], missing:[],extra:[],unknownItems:[],uncertainties:[] };`);
+  await evaluate(`window.__visionCalls = 0; window.__visionFetch = window.fetch; window.fetch = (url, options) => { if (url !== '/api/verify') return window.__visionFetch(url, options); window.__visionCalls++; const request = JSON.parse(options.body); window.__lastVisionRequest = request; return new Promise((resolve,reject) => { window.__resolveVision = response => resolve(new Response(JSON.stringify({orderId:request.orderId,scanId:request.scanId,...response}),{headers:{'Content-Type':'application/json'}})); options.signal.addEventListener('abort', () => reject(new DOMException('Aborted','AbortError'))); }); }; window.__match = { result:'match', observed:[{menuItemId:'burger',quantity:1},{menuItemId:'fries',quantity:1},{menuItemId:'milkshake',quantity:1}], missing:[],extra:[],unknownItems:[],uncertainties:[] };`);
   await evaluate(`document.querySelector('.packing-photo-actions button').click(); document.querySelector('.packing-photo-actions button').click();`);
   await until(() => evaluate(`window.__visionCalls === 1`), 'single pending photo request');
   assert.equal(await evaluate(`document.querySelector('.packing-pending').textContent`), 'Checking photo…');
   assert.equal(await evaluate(`document.querySelector('.seal-check input').disabled`), true);
-  await evaluate(`window.__resolveVision({...window.__match,result:'mismatch',observed:[{menuItemId:'burger',quantity:1},{menuItemId:'cola',quantity:2}],missing:[{menuItemId:'fries',quantity:1}],extra:[{menuItemId:'cola',quantity:1}]})`);
+  await evaluate(`window.__resolveVision({...window.__match,result:'mismatch',observed:[{menuItemId:'burger',quantity:1},{menuItemId:'milkshake',quantity:2}],missing:[{menuItemId:'fries',quantity:1}],extra:[{menuItemId:'milkshake',quantity:1}]})`);
   await until(() => evaluate(`document.querySelector('.verification-result.mismatch')?.textContent.includes('Missing: Fries ×1')`), 'missing fries quantity');
-  assert.equal(await evaluate(`document.querySelector('.verification-result.mismatch').textContent.includes('Extra: Cola ×1')`), true);
+  assert.equal(await evaluate(`document.querySelector('.verification-result.mismatch').textContent.includes('Extra: Milkshake ×1')`), true);
   await screenshot('packing-mismatch.png');
   await click('Recheck photo');
   await evaluate(`window.__resolveVision(window.__match)`);
   await until(() => evaluate(`document.querySelector('.verification-result.match')?.textContent.includes('Visible counts match')`), 'rescan replaces mismatch');
-  assert.equal(await evaluate(`${order('ON-1041')}.verification.observed.find(i => i.menuItemId === 'cola').quantity`), 1, 'counts replace rather than accumulate');
+  assert.equal(await evaluate(`${order('ON-1041')}.verification.observed.find(i => i.menuItemId === 'milkshake').quantity`), 1, 'counts replace rather than accumulate');
   await evaluate(`document.querySelector('.seal-check input').click()`);
   await screenshot('packing-match.png');
   await evaluate(`window.__upload()`);

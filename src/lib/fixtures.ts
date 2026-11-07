@@ -2,7 +2,7 @@ import { CATALOG, type MenuItemId } from "./catalog";
 import { type Order } from "./contracts";
 
 export function makeOrder(source: Order["source"], sourceOrderId: string, now = Date.now(), offset = 0): Order {
-  const menus: MenuItemId[][] = [["burger", "fries", "cola"], ["burger", "cookie"], ["fries", "cola", "cookie"], ["burger", "fries"]];
+  const menus: MenuItemId[][] = [["burger", "fries", "milkshake"], ["burger", "salad"], ["fries", "milkshake", "salad"], ["burger", "fries"]];
   const number = Number(sourceOrderId.replace(/\D/g, "")) || 1;
   return {
     id: `${source === "online" ? "ON" : "IN"}-${sourceOrderId}`,

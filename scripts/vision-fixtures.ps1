@@ -4,10 +4,10 @@ Add-Type -AssemblyName System.Drawing
 $fixtureDir = Join-Path $PSScriptRoot '../tests/fixtures/vision'
 New-Item -ItemType Directory -Force -Path $fixtureDir | Out-Null
 $cases = @{
-  correct = @('BURGER', 'FRIES', 'COLA')
-  missing = @('BURGER', 'COLA')
-  extra = @('BURGER', 'FRIES', 'COLA', 'COOKIE')
-  unclear = @('BURGER', 'FRIES', 'COLA', '???')
+  correct = @('BURGER', 'FRIES', 'MILKSHAKE')
+  missing = @('BURGER', 'MILKSHAKE')
+  extra = @('BURGER', 'FRIES', 'MILKSHAKE', 'SALAD')
+  unclear = @('BURGER', 'FRIES', 'MILKSHAKE', '???')
 }
 $font = New-Object System.Drawing.Font('Arial', 30, [System.Drawing.FontStyle]::Bold)
 $smallFont = New-Object System.Drawing.Font('Arial', 18)

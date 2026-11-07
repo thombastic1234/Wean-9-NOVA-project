@@ -7,18 +7,18 @@ import { POST } from "../src/app/api/verify/route";
 
 const imageDataUrl = "data:image/png;base64," + readFileSync("tests/fixtures/vision/correct.png").toString("base64");
 const request: VerifyRequest = { orderId: "ON-1", scanId: "scan-1", imageDataUrl,
-  expectedItems: [{ menuItemId: "burger", quantity: 1 }, { menuItemId: "fries", quantity: 1 }, { menuItemId: "cola", quantity: 1 }] };
+  expectedItems: [{ menuItemId: "burger", quantity: 1 }, { menuItemId: "fries", quantity: 1 }, { menuItemId: "milkshake", quantity: 1 }] };
 const matching = { observed: request.expectedItems, unknownItems: [], uncertainties: [] };
 const httpRequest = (body: unknown, headers = {}) => new Request("http://localhost/api/verify", {
   method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body),
 });
 const completion = (value: unknown, finish_reason = "stop") => Response.json({ choices: [{ message: { content: JSON.stringify(value) }, finish_reason }] });
 
-test("specified missing fries / extra cola acceptance case", () => {
-  const result = compareObservation(request, { observed: [{ menuItemId: "burger", quantity: 1 }, { menuItemId: "cola", quantity: 2 }], unknownItems: [], uncertainties: [] });
+test("specified missing fries / extra milkshake acceptance case", () => {
+  const result = compareObservation(request, { observed: [{ menuItemId: "burger", quantity: 1 }, { menuItemId: "milkshake", quantity: 2 }], unknownItems: [], uncertainties: [] });
   assert.equal(result.result, "mismatch");
   assert.deepEqual(result.missing, [{ menuItemId: "fries", quantity: 1 }]);
-  assert.deepEqual(result.extra, [{ menuItemId: "cola", quantity: 1 }]);
+  assert.deepEqual(result.extra, [{ menuItemId: "milkshake", quantity: 1 }]);
 });
 test("match requires no unknowns or uncertainty; definite discrepancies take precedence", () => {
   assert.equal(compareObservation(request, matching).result, "match");
@@ -26,7 +26,7 @@ test("match requires no unknowns or uncertainty; definite discrepancies take pre
     assert.equal(compareObservation(request, observation).result, "review_needed");
     assert.equal(compareObservation(request, { ...observation, observed: [] }).result, "mismatch");
   }
-  assert.deepEqual(compareObservation(request, { ...matching, observed: [...matching.observed, { menuItemId: "cookie", quantity: 1 }] }).extra, [{ menuItemId: "cookie", quantity: 1 }]);
+  assert.deepEqual(compareObservation(request, { ...matching, observed: [...matching.observed, { menuItemId: "salad", quantity: 1 }] }).extra, [{ menuItemId: "salad", quantity: 1 }]);
 });
 test("expected duplicates aggregate; invalid or duplicate observations are rejected", () => {
   const repeated = { ...request, expectedItems: [{ menuItemId: "burger" as const, quantity: 1 }, { menuItemId: "burger" as const, quantity: 1 }] };
@@ -40,7 +40,7 @@ test("expected duplicates aggregate; invalid or duplicate observations are rejec
 test("prompt contains full catalog and image but no expected quantities or order IDs", () => {
   const completion = buildVisionCompletion(request.imageDataUrl);
   const text = JSON.stringify(completion);
-  for (const id of ["burger", "fries", "cola", "cookie"]) assert.ok(text.includes(id));
+  for (const id of ["burger", "fries", "milkshake", "salad"]) assert.ok(text.includes(id));
   assert.ok(text.includes(request.imageDataUrl));
   assert.ok(!text.includes("expectedItems"));
   assert.ok(!text.includes(request.orderId));

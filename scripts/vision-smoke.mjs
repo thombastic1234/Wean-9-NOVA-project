@@ -13,7 +13,7 @@ try {
   const response = await fetch(`${process.env.APP_URL || 'http://127.0.0.1:3000'}/api/verify`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),
     body: JSON.stringify({ orderId: 'VISION-SMOKE', scanId, imageDataUrl, expectedItems: [
-      { menuItemId: 'burger', quantity: 1 }, { menuItemId: 'fries', quantity: 1 }, { menuItemId: 'cola', quantity: 1 },
+      { menuItemId: 'burger', quantity: 1 }, { menuItemId: 'fries', quantity: 1 }, { menuItemId: 'milkshake', quantity: 1 },
     ] }),
   });
   assert.equal(response.status, 200, 'Verification route must accept the image');
