@@ -1,4 +1,4 @@
-// Optional local browser check using Node's built-in WebSocket and installed Edge.
+// Optional local browser check using Node's built-in WebSocket and Chrome/Edge.
 // Start the app first. Run: node scripts/browser-smoke.mjs
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -6,7 +6,7 @@ import { mkdtemp, readFile, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const browserPath = process.env.EDGE_PATH || 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
+const browserPath = process.env.EDGE_PATH || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe');
 const profile = await mkdtemp(join(tmpdir(), 'passcheck-browser-'));
 const browser = spawn(browserPath, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { windowsHide: true, stdio: 'ignore' });
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -14,8 +14,8 @@ let socket;
 let sequence = 0;
 const pending = new Map();
 const errors = [];
-async function until(fn, description) {
-  for (let attempt = 0; attempt < 100; attempt++) {
+async function until(fn, description, attempts = 100) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try { const value = await fn(); if (value) return value; } catch {}
     await delay(100);
   }
@@ -30,7 +30,7 @@ function command(method, params = {}) {
 }
 async function evaluate(expression) {
   const response = await command('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-  if (response.exceptionDetails) throw new Error(response.exceptionDetails.text);
+  if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description || response.exceptionDetails.text);
   return response.result.value;
 }
 async function click(text) {
@@ -140,8 +140,78 @@ try {
   assert.equal(await evaluate(`${order('IN-1042')}.tableNumber`), '03', 'table destination is separate from pass');
   await click('Reset demo'); await click('Reset demo now');
   await until(() => evaluate(`${stored}.orders.every(o => o.status === 'queued')`), 'clean final demo');
+
+  // Packing acceptance uses simulated vision results, never a live recognition claim.
+  await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
+  await evaluate(`(() => { const state = ${stored}; state.orders[0].items = [{menuItemId:'burger',name:'Burger',quantity:1},{menuItemId:'fries',name:'Fries',quantity:1},{menuItemId:'cola',name:'Cola',quantity:1}]; localStorage.setItem('passcheck.demo.v1', JSON.stringify(state)); })()`);
+  await command('Page.reload', { ignoreCache: true });
+  await until(() => evaluate(`document.querySelectorAll('.queue-column .ticket').length === 6`), 'packing fixture reload');
+  await evaluate(`document.querySelector('.queue-column .ticket button.full').click()`);
+  await click('Finish cooking');
+  await evaluate(`window.__upload = async (type = 'image/png') => { const canvas = document.createElement('canvas'); canvas.width = 2400; canvas.height = 1800; const ctx = canvas.getContext('2d'); ctx.fillStyle = '#f6f2df'; ctx.fillRect(0,0,2400,1800); ctx.fillStyle = '#27382a'; ctx.font = '100px sans-serif'; ctx.fillText('SIMULATED TEST PHOTO',100,300); const blob = await new Promise(resolve => canvas.toBlob(resolve,'image/png')); const data = new DataTransfer(); data.items.add(new File([blob], 'packing-test.png', {type})); const input = document.querySelector('.photo-upload input'); input.files = data.files; input.dispatchEvent(new Event('change', {bubbles:true})); };`);
+  await evaluate(`window.__upload()`);
+  await until(() => evaluate(`document.querySelector('.packing-photo img')?.naturalWidth === 1024`), 'resized image preview');
+  await click('Check photo');
+  await until(() => evaluate(`document.querySelector('.verification-result')?.textContent.includes('Vision verification is unavailable')`), 'real unconnected endpoint honest failure');
+  assert.equal(await evaluate(`document.querySelector('.seal-check input').disabled`), true);
+  assert.equal(await evaluate(`document.querySelector('.packing-manual').disabled`), false, 'manual fallback remains available');
+
+  await evaluate(`window.__visionCalls = 0; window.__visionFetch = window.fetch; window.fetch = (url, options) => { if (url !== '/api/verify') return window.__visionFetch(url, options); window.__visionCalls++; const request = JSON.parse(options.body); window.__lastVisionRequest = request; return new Promise((resolve,reject) => { window.__resolveVision = response => resolve(new Response(JSON.stringify({orderId:request.orderId,scanId:request.scanId,...response}),{headers:{'Content-Type':'application/json'}})); options.signal.addEventListener('abort', () => reject(new DOMException('Aborted','AbortError'))); }); }; window.__match = { result:'match', observed:[{menuItemId:'burger',quantity:1},{menuItemId:'fries',quantity:1},{menuItemId:'cola',quantity:1}], missing:[],extra:[],unknownItems:[],uncertainties:[] };`);
+  await evaluate(`document.querySelector('.packing-photo-actions button').click(); document.querySelector('.packing-photo-actions button').click();`);
+  await until(() => evaluate(`window.__visionCalls === 1`), 'single pending photo request');
+  assert.equal(await evaluate(`document.querySelector('.packing-pending').textContent`), 'Checking photo…');
+  assert.equal(await evaluate(`document.querySelector('.seal-check input').disabled`), true);
+  await evaluate(`window.__resolveVision({...window.__match,result:'mismatch',observed:[{menuItemId:'burger',quantity:1},{menuItemId:'cola',quantity:2}],missing:[{menuItemId:'fries',quantity:1}],extra:[{menuItemId:'cola',quantity:1}]})`);
+  await until(() => evaluate(`document.querySelector('.verification-result.mismatch')?.textContent.includes('Missing: Fries ×1')`), 'missing fries quantity');
+  assert.equal(await evaluate(`document.querySelector('.verification-result.mismatch').textContent.includes('Extra: Cola ×1')`), true);
+  await screenshot('packing-mismatch.png');
+  await click('Recheck photo');
+  await evaluate(`window.__resolveVision(window.__match)`);
+  await until(() => evaluate(`document.querySelector('.verification-result.match')?.textContent.includes('Visible counts match')`), 'rescan replaces mismatch');
+  assert.equal(await evaluate(`${order('ON-1041')}.verification.observed.find(i => i.menuItemId === 'cola').quantity`), 1, 'counts replace rather than accumulate');
+  await evaluate(`document.querySelector('.seal-check input').click()`);
+  await screenshot('packing-match.png');
+  await evaluate(`window.__upload()`);
+  await until(() => evaluate(`${order('ON-1041')}.verification === null && ${order('ON-1041')}.packingConfirmedAt === null && document.querySelector('.packing-photo img')?.naturalWidth === 1024`), 'changed photo clears check and confirmation');
+  await click('Check photo');
+  await evaluate(`window.__staleVision = window.__resolveVision; window.__upload()`);
+  await until(() => evaluate(`document.querySelector('.packing-photo img')?.naturalWidth === 1024`), 'replacement prepared during pending request');
+  await evaluate(`window.__staleVision(window.__match)`);
+  assert.equal(await evaluate(`${order('ON-1041')}.verification`), null, 'old photo response ignored');
+  await click('Check photo');
+  await evaluate(`window.__resolveVision({...window.__match,scanId:'wrong-scan'})`);
+  await until(() => evaluate(`document.querySelector('.verification-result.review_needed')?.textContent.includes('invalid or outdated')`), 'wrong scan rejected');
+  await evaluate(`document.querySelectorAll('.check-row input').forEach(input => { if (!input.closest('label').textContent.includes('No extra')) input.click(); })`);
+  assert.equal(await evaluate(`document.querySelector('.packing-manual button').disabled`), true, 'separate no-extras checkbox required');
+  await evaluate(`document.querySelector('.check-row:last-child input').click()`);
+  await click('Complete manual check');
+  await until(() => evaluate(`${order('ON-1041')}.verification?.result === 'manual_checked'`), 'manual fallback after failed photo check');
+  await evaluate(`document.querySelector('.seal-check input').click(); window.__upload('image/gif')`);
+  await until(() => evaluate(`document.querySelector('.verification-result.review_needed')?.textContent.includes('Choose a JPEG or PNG')`), 'unsupported file error');
+  assert.equal(await evaluate(`${order('ON-1041')}.packingConfirmedAt`), null);
+  await evaluate(`window.__upload()`);
+  await until(() => evaluate(`document.querySelector('.packing-photo img')?.naturalWidth === 1024`), 'new photo after unsupported file');
+  await click('Check photo');
+  await until(() => evaluate(`document.querySelector('.verification-result.review_needed')?.textContent.includes('timed out')`), 'photo request deadline', 200);
+  await click('Recheck photo');
+  await evaluate(`window.__otherOrderResponse = window.__resolveVision; [...document.querySelectorAll('.queue-column .ticket')].find(ticket => ticket.querySelector('h3').textContent === 'IN-1042').querySelector('button.full').click()`);
+  await click('Finish cooking');
+  await click('IN-1042');
+  await until(() => evaluate(`document.querySelector('.packing-ticket h3').textContent === 'IN-1042'`), 'switch away from pending scan');
+  await evaluate(`window.__otherOrderResponse(window.__match)`);
+  assert.equal(await evaluate(`${order('ON-1041')}.verification`), null, 'unmounted pending scan cannot update old order');
+  assert.equal(await evaluate(`document.querySelector('.packing-photo img')`), null, 'order switch clears photo');
+  assert.equal(await evaluate(`${order('IN-1042')}.verification`), null, 'other order response ignored');
+  await command('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await evaluate(`window.__upload()`);
+  await until(() => evaluate(`document.querySelector('.packing-photo img')?.naturalWidth === 1024`), 'mobile photo');
+  assert.equal(await evaluate(`document.documentElement.scrollWidth <= innerWidth`), true, 'packing upload has no mobile overflow');
+  await screenshot('packing-mobile.png');
+  await evaluate(`window.fetch = window.__visionFetch`);
+  await click('Reset demo'); await click('Reset demo now');
+
   assert.deepEqual(errors, [], 'no browser errors');
-  console.log('PASS: explicit prioritization, no overlapping requests, stale response rejection, actionable queue, both sources, full manual journey, readiness guards, refresh persistence, collection, mobile layout, reset, packing order switching, dine-in location, no browser errors.');
+  console.log('PASS: upload/resizing, real 503 fallback, simulated mismatch/match replacement, duplicate clicks, stale photo/order results, changed photo invalidation, manual no-extras gate, unsupported images, timeout, mobile packing; explicit prioritization, no overlapping requests, stale response rejection, actionable queue, both sources, full manual journey, readiness guards, refresh persistence, collection, mobile layout, reset, packing order switching, dine-in location, no browser errors.');
   console.log('Screenshots: test-results/desktop-queue.png, desktop-packing.png, desktop-ready.png, mobile-queue.png');
 } finally {
   if (socket?.readyState === WebSocket.OPEN) socket.close();

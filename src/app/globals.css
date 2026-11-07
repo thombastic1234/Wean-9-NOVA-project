@@ -13,3 +13,28 @@
 .ticket-stack:empty{display:none}
 .ticket-stack>.ticket{flex-shrink:0}
 @media(max-width:640px){.ticket-stack{max-height:610px}}
+
+/* Packing evidence stays beside the result when the panel has room. */
+.packing-expected{font-size:11px;line-height:1.7;color:#536448;margin:12px 0}
+.packing-expected p{color:#6c795e;margin-top:3px}
+.photo-upload{display:flex;flex-direction:column;gap:9px;padding:12px;border:1px dashed #b9c9a7;border-radius:7px;font-size:11px;color:#4c623c;background:#f8faf4}
+.photo-upload input{width:100%;min-width:0;font-size:11px;color:#58694c}
+.photo-upload small{font-size:10px;color:#718363}
+.packing-evidence{display:flex;flex-wrap:wrap;gap:12px;margin-top:12px;align-items:flex-start}
+.packing-photo{flex:1 1 150px;min-width:0;margin:0}
+.packing-photo img{display:block;width:100%;max-height:300px;object-fit:contain;background:#edf1e7;border:1px solid #dce4d2;border-radius:7px}
+.packing-photo figcaption{font-size:9px;line-height:1.6;color:#738268;margin-top:4px}
+.packing-results{flex:1 1 150px;min-width:0;overflow-wrap:anywhere}
+.verification-result{padding:12px;border:1px solid #d6b56a;border-radius:7px;background:#fff6df;color:#71511c;font-size:11px;line-height:1.7}
+.verification-result p{margin-top:6px}
+.verification-result.match,.verification-result.manual_checked{border-color:#a8c28d;background:#f0f8e8;color:#42652b}
+.verification-result.mismatch{border-color:#db9e94;background:#fff0ec;color:#913c30}
+.packing-pending{font-size:12px;line-height:1.7;color:#725d37;padding:10px 0}
+.packing-photo-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:12px 0 18px}
+.packing-photo-actions .text-button{font-size:10px;line-height:1.6}
+.packing-manual{border:0;border-top:1px solid #e3e9da;padding:12px 0 0;margin:0;min-width:0}
+.packing-manual legend{font-size:12px;font-weight:600;color:#566a48;padding-right:8px}
+.packing-manual .check-caption{margin-top:0;color:#718163}
+.packing-manual>.button{margin-top:12px}
+.packing-manual:disabled{opacity:.6}
+.manual-recheck{font-size:11px;margin-top:12px;text-decoration:underline}
