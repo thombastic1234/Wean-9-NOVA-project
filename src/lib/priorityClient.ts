@@ -1,5 +1,6 @@
 import { priorityResponseSchema, type PriorityRequest, type PriorityResponse } from "./contracts";
 import { applyMaximumWait, fallbackRanking, hasCompleteRanking, PRIORITY_TIMEOUT_MS } from "./priority";
+import { appFetch } from "./apiClient";
 
 export type PriorityOutcome = { response: PriorityResponse; error: string | null };
 
@@ -10,7 +11,7 @@ export async function requestPriority(request: PriorityRequest, signal?: AbortSi
   if (signal?.aborted) controller.abort();
   const timer = setTimeout(cancel, PRIORITY_TIMEOUT_MS);
   try {
-    const response = await fetch("/api/prioritize", {
+    const response = await appFetch("/api/prioritize", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request), signal: controller.signal,
     });

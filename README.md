@@ -6,7 +6,7 @@ The menu is **Burger, Fries, Milkshake, and Salad** (`burger`, `fries`, `milksha
 
 ## Setup
 
-Use **Node.js 24+**. The existing Next.js / React / TypeScript / Zod stack is retained. SQLite comes from Node's built-in `node:sqlite`; no database service or additional npm dependency is needed.
+Use **Node.js 24+**. The existing Next.js / React / TypeScript / Zod stack is retained. The Vercel demo stores orders in your browser; a local server uses Node's built-in SQLite. No database service or additional npm dependency is needed for either demo mode.
 
 ```sh
 npm ci
@@ -42,9 +42,15 @@ npm run account -- --role DRIVER --email driver@example.com --name Driver
 
 The optional account command loads `.env.local` so it uses the same database as Next.js. For noninteractive custom-account setup, supply `PASSCHECK_ACCOUNT_PASSWORD` through the server environment; never put it in a `NEXT_PUBLIC_` variable or commit it.
 
-**Vercel:** fixed-account sign-in, session checks, and browser logout do not initialize or write SQLite. Fixed sessions are signed, expire after eight hours, and work across function instances and restarts. `PASSCHECK_SESSION_SECRET` optionally replaces the shared demo signing key; use the same server-side value across deployments. This authentication change does **not** migrate order storage: orders, assignments, custom accounts, settings, and history still require the existing writable SQLite database. A hosted database backend is still needed for reliable Vercel order operations; changing credentials does not fix that storage constraint.
+**Vercel:** `PASSCHECK_STORAGE_MODE=auto` (the default) selects **browser demo storage** when `VERCEL=1`. The app never creates `/var/task/data` or opens a file database in this mode. If automatic platform detection is unavailable, set `PASSCHECK_STORAGE_MODE=browser_demo` in the Vercel project environment and redeploy. Sign in with the five fixed usernames; no account-creation command is required.
 
-For production-mode rehearsal: `npm run build`, then `npm start`. Production requires HTTPS outside localhost and a persistent writable disk. This SQLite implementation targets one restaurant on a single Node server, not ephemeral serverless storage or independent replicas. Back up the SQLite database and its WAL consistently. Users, sessions, orders, and settings are local data and are excluded from Git.
+Orders, assignments, preferences, and history are saved together in this browser. Switching roles in the **same browser and site** shares the same demo, including after page refreshes or serverless function restarts. Each browser/site starts independently: this is a single-browser prototype, not synchronized multi-device storage. Use one active tab for the demo. The visible browser-demo banner explains this and lets a manager reset the workspace. Clearing browser storage removes that browser's orders.
+
+Requests carry an encrypted workspace to `/api/browser-demo`. Each request restores it into a fresh **in-memory** repository, runs the existing authorization, ownership, source filtering, revision/idempotency, workflow, priority, and photo-validation handlers, then returns updated encrypted state. No server filesystem write or global order array is involved. Browser reads and writes are serialized so polling cannot overwrite a pending action. Credentials/password hashes and sessions are never included in the workspace. The workspace limit is 200 orders / 2 MiB of plain JSON; requests including a photo are bounded at 4 MiB.
+
+Fixed sessions are signed and expire after eight hours. `PASSCHECK_SESSION_SECRET` optionally replaces the shared demo signing/encryption key; keep the same server-only value across instances/deployments. Changing it invalidates existing demo sessions/workspaces, so sign in again and reset the browser demo if needed. The five credentials remain public demo credentials. Custom email accounts and direct database CLI tools require local SQLite mode.
+
+For production-mode rehearsal: `npm run build`, then `npm start`. Set `PASSCHECK_STORAGE_MODE=browser_demo` to rehearse the Vercel behavior locally. `sqlite` mode requires a persistent writable disk and targets one restaurant on a single Node server; back up that database and its WAL consistently. A shared hosted database is still needed for synchronized orders across different browsers/devices. Production requires HTTPS outside localhost. Local data files are excluded from Git.
 
 On this Windows machine, the portable runtime used for checks is `%TEMP%\passcheck-runtime\node-v24.22.2-win-x64`. If Node is missing from PATH, set `$env:Path = "$env:TEMP\passcheck-runtime\node-v24.22.2-win-x64;$env:Path"` in PowerShell first.
 
@@ -78,9 +84,9 @@ Managers may cancel active orders with a reason. Cancelled/completed orders cann
 
 All order reads, source/fulfillment/status/date filtering, ownership checks, driver assignment checks, workflow validation, checks, totals, and timestamps run on the backend. Staff directory, preferences, prioritization, and photo verification also require appropriate sessions. Customer ownership is applied in SQL before any data is returned. IDs for inaccessible orders return 404.
 
-Order mutations run inside `BEGIN IMMEDIATE` transactions with a revision check. A unique per-user request ID makes repeated successful requests idempotent; stale revisions or conflicting reuse return 409. Each operational action records previous/new status, server timestamp, and actor. Photo checks use current order counts and scan IDs from the server, record results server-side, and reject stale scans. Browser-submitted live matches are not trusted. Manual staff attestations remain explicitly marked manual.
+Order mutations run inside `BEGIN IMMEDIATE` transactions with a revision check. A unique per-user request ID makes repeated successful requests idempotent; stale revisions or conflicting reuse return 409. In browser mode these protections apply to the serialized browser workspace; independent browsers/tabs do not share a central conflict registry. Each operational action records previous/new status, server timestamp, and actor. Photo checks use current order counts and scan IDs from the server, record results server-side, and reject stale scans. Browser-submitted live matches are not trusted. Manual staff attestations remain explicitly marked manual.
 
-Views poll every four seconds and refresh after actions. Pending actions are disabled; errors and empty/success states are visible. Responses are not cached. Browser localStorage is no longer the authoritative store. Data and sessions survive refreshing the browser and restarting the server.
+Views poll every four seconds and refresh after actions. Pending actions are disabled; errors and empty/success states are visible. Responses are not cached. Local-server mode persists its authoritative orders in SQLite. Vercel/browser mode keeps its server-validated encrypted workspace in localStorage. Both survive refreshing the browser and restarting the server, as long as the relevant database/browser storage and signing key remain available.
 
 ## Existing demo migration
 
@@ -96,7 +102,7 @@ Both services keep `google/gemini-2.5-flash`, structured output, deadlines, vali
 
 Synthetic labeled test images in `tests/fixtures/vision/` are test inputs, not photographs or saved AI responses. Recreate them on Windows with `powershell -File scripts/vision-fixtures.ps1`. Live recognition and model availability are **not verified** without credentials; simulated test results are not live model tests.
 
-Authenticated optional live smoke checks use `PASSCHECK_SMOKE_EMAIL` and `PASSCHECK_SMOKE_PASSWORD` (server-side environment only). Start Next.js with a real OpenRouter key, create relevant test orders, then run:
+Authenticated optional CLI live smoke checks target **local SQLite mode**, using `PASSCHECK_SMOKE_EMAIL` and `PASSCHECK_SMOKE_PASSWORD` (server-side environment only). Start Next.js with a real OpenRouter key, create relevant test orders, then run:
 
 ```sh
 # Manager or chef account; at least one placed order in ONLINE (or PASSCHECK_SMOKE_SOURCE).
@@ -116,4 +122,4 @@ npm run build
 npm run test:browser
 ```
 
-The browser check starts its own production server on an available port using a temporary SQLite database and random test credentials. It uses installed Edge on Windows / Chrome on macOS (`EDGE_PATH` overrides it), and verifies the five views, production demo lockout, actual sign-in/logout, direct API isolation, source tabs, chef preparation, waiter creation and embedded packaging, photo failure/manual fallback, driver claim/pickup/delivery, customer ordering and progress, dine-in serving without packaging, mobile overflow, and persistence across server restart. Screenshots go to ignored `test-results/`. It does not touch your restaurant database or call a live model.
+The browser check starts its own production server on an available port, first using a temporary SQLite database and random test credentials. It uses installed Edge on Windows / Chrome on macOS (`EDGE_PATH` overrides it), and verifies the five views, production development-switcher lockout, fixed/custom sign-in/logout, direct API isolation, source tabs, chef preparation, waiter creation and embedded packaging, photo failure/manual fallback, driver claim/pickup/delivery, customer ordering and progress, dine-in serving, mobile overflow, and server-restart persistence. It then restarts with `VERCEL=1`, auto storage selection, and a database path whose directory must never be created. It repeats the full browser-stored delivery journey, prioritization, photo fallback/manual checks, role switches, restart/refresh restoration, mobile banner, and reset, and verifies that no application database directory was created. Screenshots go to ignored `test-results/`. It does not touch your restaurant database or call a live model.

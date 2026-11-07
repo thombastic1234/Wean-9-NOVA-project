@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { getRepository, HttpError } from "@/server/database";
 import { authenticateFixedAccount, isFixedSession, isFixedUsername } from "@/server/fixedAccounts";
+import { storageMode } from "@/server/storageMode";
 import { body, checkOrigin, COOKIE_NAME, demoEnabled, errorResponse, json, requireUser, sessionToken, withSession } from "@/server/http";
 export const runtime = "nodejs";
 export async function GET(request: Request) {
-  try { return json({ user: requireUser(request), demoEnabled: demoEnabled() }); }
-  catch { return json({ user: null, demoEnabled: demoEnabled() }); }
+  try { return json({ user: requireUser(request), demoEnabled: demoEnabled(), storageMode: storageMode() }); }
+  catch { return json({ user: null, demoEnabled: demoEnabled(), storageMode: storageMode() }); }
 }
 export async function POST(request: Request) {
   try {

@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 import { getRepository, HttpError } from "./database";
 import type { OperationalOrder, Role, User } from "../lib/operations";
 import { createFixedSession, fixedAccount, fixedSessionUser, isFixedSession } from "./fixedAccounts";
+import { storageMode } from "./storageMode";
 
 export const COOKIE_NAME = "passcheck_session";
 export function sessionToken(request: Request) {
@@ -51,7 +52,7 @@ export async function body(request: Request, limit = 100_000): Promise<unknown> 
   } finally { reader.releaseLock(); }
 }
 export function withSession(request: Request, user: User) {
-  const response = json({ user });
+  const response = json({ user, storageMode: storageMode() });
   response.cookies.set(COOKIE_NAME, fixedAccount(user.id) ? createFixedSession(user) : getRepository().session(user.id), { httpOnly: true, secure: process.env.NODE_ENV === "production" || new URL(request.url).protocol === "https:", sameSite: "strict", path: "/", maxAge: 8 * 60 * 60 });
   return response;
 }

@@ -7,6 +7,8 @@ import { DEFAULT_SETTINGS, orderSchema, settingsSchema, verificationSchema, type
 import { ACTIONS, allowedActions, canReadOrder, createOrderSchema, MENU_PRICES, packingIsComplete, type OperationalOrder, type Role, type User, type Operation } from "../lib/operations";
 import { CATALOG } from "../lib/catalog";
 import { FIXED_ACCOUNTS, FIXED_PASSWORD } from "./fixedAccounts";
+import { repositoryContext } from "./repositoryContext";
+import { storageMode } from "./storageMode";
 
 export class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -252,7 +254,41 @@ export class Repository {
       }, randomUUID());
     }
   }
+  exportWorkspace() {
+    const orders = this.db.prepare("SELECT document FROM orders ORDER BY created_at,id").all().map(row => JSON.parse(row.document as string) as OperationalOrder);
+    const requests = this.db.prepare("SELECT user_id,request_id,fingerprint,order_id FROM requests").all();
+    if (orders.length > 200 || requests.length > 10_000) throw new HttpError(413, "This browser demo is full. Reset the demo to start again.");
+    return {
+      version: 1 as const,
+      orders, requests,
+      settings: this.settings(),
+    };
+  }
+  restoreWorkspace(input: unknown) {
+    // Input has already passed authenticated decryption. Validate the envelope/version
+    // before restoring only order data; account credentials/sessions are never exported.
+    const snapshot = z.object({
+      version: z.literal(1), orders: z.array(z.object({
+        id: z.string(), source: z.enum(["IN_PERSON", "ONLINE"]), sourceOrderId: z.string(),
+        customerId: z.string().nullable(), driverId: z.string().nullable(),
+        fulfillment: z.enum(["DINE_IN", "TAKEAWAY", "DELIVERY"]), status: z.string(), revision: z.number().int().nonnegative(), createdAt: z.string(),
+      }).passthrough()).max(200),
+      requests: z.array(z.object({ user_id: z.string(), request_id: z.string(), fingerprint: z.string(), order_id: z.string() })).max(10_000),
+      settings: settingsSchema,
+    }).parse(input);
+    this.transaction(() => {
+      for (const order of snapshot.orders) this.insert(order as OperationalOrder);
+      const insert = this.db.prepare("INSERT INTO requests VALUES(?,?,?,?)");
+      for (const row of snapshot.requests) insert.run(row.user_id, row.request_id, row.fingerprint, row.order_id);
+      this.db.prepare("UPDATE settings SET document=? WHERE id=1").run(JSON.stringify(snapshot.settings));
+    });
+  }
 }
 
 const globalDb = globalThis as unknown as { passcheckRepository?: Repository };
-export function getRepository() { return globalDb.passcheckRepository ??= new Repository(process.env.PASSCHECK_DATABASE_PATH || resolve("data/passcheck.sqlite")); }
+export function getRepository() {
+  const scoped = repositoryContext.getStore();
+  if (scoped) return scoped;
+  if (storageMode() === "browser_demo") throw new HttpError(503, "This deployment uses browser demo storage. Open the app and sign in with a fixed role username.");
+  return globalDb.passcheckRepository ??= new Repository(process.env.PASSCHECK_DATABASE_PATH || resolve("data/passcheck.sqlite"));
+}

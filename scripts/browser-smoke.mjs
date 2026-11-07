@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
+import { existsSync } from 'node:fs';
 import { Repository } from '../src/server/database.ts';
 
 const temporary = await mkdtemp(join(tmpdir(), 'passcheck-roles-'));
@@ -24,8 +25,9 @@ const portServer = createServer(); await new Promise(resolve => portServer.liste
 const port = portServer.address().port; await new Promise(resolve => portServer.close(resolve));
 const base = `http://127.0.0.1:${port}`;
 let server; let serverOutput = '';
-function startServer() {
-  server = spawn(process.execPath, [resolve('node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(port)], { windowsHide: true, env: { ...process.env, NODE_ENV: 'production', NEXT_TELEMETRY_DISABLED: '1', OPENROUTER_API_KEY: '', PASSCHECK_DATABASE_PATH: databasePath, PASSCHECK_DEMO_MODE: 'true' }, stdio: ['ignore', 'pipe', 'pipe'] });
+const forbiddenDirectory = join(temporary, 'must-not-be-created');
+function startServer(browserMode = false) {
+  server = spawn(process.execPath, [resolve('node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(port)], { windowsHide: true, env: { ...process.env, NODE_ENV: 'production', NEXT_TELEMETRY_DISABLED: '1', OPENROUTER_API_KEY: '', VERCEL: browserMode ? '1' : '', PASSCHECK_STORAGE_MODE: browserMode ? 'auto' : 'sqlite', PASSCHECK_DATABASE_PATH: browserMode ? join(forbiddenDirectory, 'orders.sqlite') : databasePath, PASSCHECK_DEMO_MODE: 'true' }, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.on('data', chunk => { serverOutput += chunk.toString(); }); server.stderr.on('data', chunk => { serverOutput += chunk.toString(); });
 }
 async function stopServer() { if (!server || server.exitCode !== null) return; const exited = new Promise(resolve => server.once('exit', resolve)); server.kill(); await exited; }
@@ -36,8 +38,10 @@ async function until(fn, description, attempts = 150) { for (let i = 0; i < atte
 function command(method, params = {}) { const id = ++sequence; return new Promise((resolve, reject) => { pending.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); }); }
 async function evaluate(expression) { const result = await command('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text); return result.result.value; }
 async function click(text, scope = 'document') {
-  const point = await until(() => evaluate(`(() => { const root = ${scope}; if(!root)return null; const button = [...root.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(text)} && !b.disabled); if (!button) return null; button.scrollIntoView({block:'center',behavior:'instant'}); const rect = button.getBoundingClientRect(); const point={x:rect.x+rect.width/2,y:rect.y+rect.height/2}; return document.elementFromPoint(point.x,point.y)?.closest('button')===button?point:null; })()`), `clickable ${text}`);
-  assert.ok(point, `Enabled button: ${text}`); await command('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 }); await command('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+  // Check visibility and activate in one browser task: image preview layout and
+  // automatic packing scrolls must not move the target between two CDP messages.
+  const clicked = await until(() => evaluate(`(() => { const root = ${scope}; if(!root)return false; const button = [...root.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(text)} && !b.disabled); if (!button) return false; button.scrollIntoView({block:'center',behavior:'instant'}); const rect=button.getBoundingClientRect(); if(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2)?.closest('button')!==button)return false; button.click();return true; })()`), `clickable ${text}`);
+  assert.equal(clicked, true, `Enabled visible button: ${text}`);
 }
 async function fill(selector, value) { await evaluate(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!element) throw new Error('Missing form element'); const proto = element.tagName === 'SELECT' ? HTMLSelectElement.prototype : element.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto,'value').set.call(element,${JSON.stringify(value)}); element.dispatchEvent(new Event(element.tagName === 'SELECT' ? 'change' : 'input',{bubbles:true})); })()`); }
 async function signIn(user, identifier = user.email, secret = password) {
@@ -116,7 +120,48 @@ try {
   await command('Page.reload', { ignoreCache: true }); await until(() => evaluate(`document.querySelector('.identity strong')?.textContent === 'Manager'`), 'fixed account session survives restart');
   await shot('fixed-account-login.png');
   assert.deepEqual(errors, [], 'fixed account logins have no browser errors');
+
+  // Reproduce the reported deployment: VERCEL=1, no writable application database.
+  await stopServer(); startServer(true); await until(async () => (await fetch(`${base}/api/session`)).ok, 'Vercel-mode server');
+  await command('Page.reload', { ignoreCache: true });
+  await until(() => evaluate(`Boolean(document.querySelector('.browser-storage-banner')) && !document.querySelector('.role-loading')`), 'automatic browser storage');
+  await until(() => evaluate(`!document.querySelector('.operation-error')`), 'no missing-directory error');
+  assert.equal(await evaluate(`document.querySelectorAll('.op-order').length`), 0, 'browser workspace starts independently of local SQLite');
+  await signIn(repo.user('fixed-customer'), 'customer', 'password');
+  await fill('[aria-label="Burger quantity"]', '1'); await fill('[aria-label="Milkshake quantity"]', '1');
+  await fill('.create-order .form-grid label:first-child select', 'DELIVERY'); await fill('[name=deliveryAddress]', '456 Browser Demo Street');
+  await click('Review complete · Submit order');
+  const browserOrderId = await until(() => evaluate(`document.querySelector('.op-order h3')?.textContent`), 'browser-persisted customer order');
+  await signIn(repo.user('fixed-chef'), 'chef', 'password'); await click('Online Orders');
+  await until(() => evaluate(`Boolean(${scope(browserOrderId)})`), 'chef sees browser customer order');
+  await click('Reprioritize'); await until(() => evaluate(`!document.querySelector('.chef-priority button').disabled`), 'browser priority service');
+  await click('Start preparation', scope(browserOrderId)); await until(() => evaluate(`${scope(browserOrderId)}?.querySelector('.status-badge')?.textContent === 'Being prepared'`), 'browser preparation');
+  await click('Finish preparation', scope(browserOrderId));
+  await signIn(repo.user('fixed-waiter'), 'waiter', 'password'); await click('Online Orders'); await until(() => evaluate(`Boolean(${scope(browserOrderId)})`), 'browser waiter queue');
+  await click('Start packaging', scope(browserOrderId)); await until(() => evaluate(`Boolean(document.querySelector('.waiter-packing'))`), 'browser packing panel');
+  await evaluate(`(() => {const bytes=Uint8Array.from(atob(${JSON.stringify(photo)}),c=>c.charCodeAt(0));const transfer=new DataTransfer();transfer.items.add(new File([bytes],'packing.png',{type:'image/png'}));const input=document.querySelector('.photo-upload input');input.files=transfer.files;input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await until(() => evaluate(`!document.querySelector('.packing-photo-actions button').disabled`), 'browser photo prepared'); await click('Check photo');
+  await until(() => evaluate(`Boolean(document.querySelector('.verification-result.review_needed'))`), 'browser real missing-key fallback');
+  await evaluate(`document.querySelectorAll('.waiter-packing .check-row input').forEach(input=>input.click())`); await click('Complete manual check');
+  await until(() => evaluate(`Boolean(document.querySelector('.verification-result.manual_checked')) && !document.querySelector('.saving-check')`), 'browser manual check saved');
+  await evaluate(`document.querySelector('.seal-check input').click()`); await until(() => evaluate(`document.querySelector('.seal-check input')?.checked && !document.querySelector('.saving-check')`), 'browser packing confirmation');
+  await fill(`select[id="location-${browserOrderId}"]`, 'Shelf A1'); await until(() => evaluate(`!document.querySelector('.server-packing>fieldset button').disabled`), 'browser location saved');
+  await click('Ready for driver pickup'); await until(() => evaluate(`!document.querySelector('.waiter-packing')`), 'browser package ready');
+  await signIn(repo.user('fixed-driver'), 'driver', 'password'); await until(() => evaluate(`Boolean(${scope(browserOrderId)})`), 'browser driver delivery');
+  await click('Claim delivery', scope(browserOrderId)); await click('Mark picked up', scope(browserOrderId));
+  await until(() => evaluate(`${scope(browserOrderId)}?.querySelector('.status-badge')?.textContent === 'Out for delivery'`), 'browser pickup distinct from delivery');
+  await click('Mark delivered', scope(browserOrderId)); await until(() => evaluate(`${scope(browserOrderId)}?.querySelector('.status-badge')?.textContent === 'Completed'`), 'browser delivered');
+  await signIn(repo.user('fixed-customer'), 'customer', 'password'); await until(() => evaluate(`Boolean(${scope(browserOrderId)})`), 'browser customer delivery history');
+  assert.equal(await evaluate(`Boolean(document.querySelector('.customer-progress .done:last-child'))`), true);
+  await stopServer(); startServer(true); await until(async () => (await fetch(`${base}/api/session`)).ok, 'browser state server restart');
+  await command('Page.reload', { ignoreCache: true }); await until(() => evaluate(`Boolean(${scope(browserOrderId)})`), 'browser order survives a fresh server instance');
+  await shot('vercel-browser-demo.png'); assert.equal(existsSync(forbiddenDirectory), false, 'Vercel never creates an application database directory');
+  await command('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true }); assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'browser demo banner fits mobile');
+  await signIn(repo.user('fixed-manager'), 'manager', 'password');
+  await evaluate('window.confirm=()=>true'); await click('Reset browser demo'); await until(() => evaluate(`document.querySelectorAll('.op-order').length === 0 && !document.querySelector('.operation-error')`), 'browser demo reset');
+  assert.deepEqual(errors, [], 'Vercel-mode browser workflows have no console errors');
   console.log('PASS: all five fixed username/password logins in production; fixed sessions survive restart; existing custom accounts; five role views; real login/logout; development switcher disabled in production; direct API isolation; source tabs; chef preparation; waiter creation/packaging; driver claim/pickup/delivery; customer ordering/progress; dine-in served; mobile menu; SQLite persistence.');
+  console.log('PASS: VERCEL=1 browser storage; full customer-to-delivered journey across roles and fresh request repositories; photo fallback/manual packing; prioritization; survives server restart without application disk writes; mobile banner; browser reset.');
   console.log('Screenshots: test-results/manager-view.png, waiter-packaging.png, driver-view.png, customer-view.png, roles-mobile.png, manager-completed.png');
 } catch (error) {
   console.error(error);

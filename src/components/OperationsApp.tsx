@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "@/lib/apiClient";
+import { api, resetBrowserDemo } from "@/lib/apiClient";
 import { DEFAULT_SETTINGS, type Settings, type PriorityResponse } from "@/lib/contracts";
 import { makePriorityRequest, fallbackRanking } from "@/lib/priority";
 import { allowedActions, canViewRole, FULFILLMENTS, FULFILLMENT_LABELS, formatMoney, progressSteps, ROLES, SOURCE_LABELS, SOURCES, STATUSES, STATUS_LABELS, toPackingOrder, type Operation, type OperationalOrder, type Role, type User } from "@/lib/operations";
@@ -20,6 +20,7 @@ type AccountOption = Pick<User, "id" | "name" | "role">;
 export function OperationsApp() {
   const [user, setUser] = useState<User | null>(null); const [sessionLoading, setSessionLoading] = useState(true);
   const [demo, setDemo] = useState(false); const [view, setView] = useState<Role>("CUSTOMER");
+  const [browserDemo, setBrowserDemo] = useState(false);
   const [source, setSource] = useState<typeof SOURCES[number]>("IN_PERSON");
   const [orders, setOrders] = useState<OperationalOrder[]>([]); const [users, setUsers] = useState<AccountOption[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS); const [busy, setBusy] = useState<string | null>(null);
@@ -36,7 +37,7 @@ export function OperationsApp() {
     identity.current++; setUser(account); setOrders([]); setUsers([]); setError(""); setNotice(""); setStatus(""); setFulfillment(""); setDate(""); setCustomerId(""); setPackingId(null); setRanking(null);
     if (account) { setView(account.role); setSource(account.role === "CUSTOMER" || account.role === "DRIVER" ? "ONLINE" : "IN_PERSON"); }
   };
-  useEffect(() => { void api<{ user: User | null; demoEnabled: boolean }>("/api/session").then(result => { rememberUser(result.user); setDemo(result.demoEnabled); }).catch(err => setError(err.message)).finally(() => setSessionLoading(false)); }, []);
+  useEffect(() => { void api<{ user: User | null; demoEnabled: boolean; storageMode: string }>("/api/session").then(result => { rememberUser(result.user); setDemo(result.demoEnabled); setBrowserDemo(result.storageMode === "browser_demo"); }).catch(err => setError(err.message)).finally(() => setSessionLoading(false)); }, []);
   useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 30_000); return () => clearInterval(timer); }, []);
 
   const load = useCallback(async (quiet = false) => {
@@ -131,7 +132,8 @@ export function OperationsApp() {
 
   return <div className="roles-app">
     {user.id.startsWith("fixed-") && <div className="fixed-account-banner">Shared demo account · {user.role.toLowerCase()} · public demo credentials</div>}
-    <header className="roles-header"><a className="brand" href="/"><span className="brand-logo">✓</span><span>passcheck.</span></a><nav aria-label="Role views">{ROLES.map(role => <button key={role} disabled={!canViewRole(user, role)} aria-current={view === role ? "page" : undefined} className={view === role ? "active" : ""} onClick={() => { setView(role); setPackingId(null); setStatus(""); setFulfillment(""); setDate(""); }}>{label(role)}{!canViewRole(user, role) && <span aria-label="Unavailable"> · locked</span>}</button>)}</nav><div className="identity"><strong>{user.name}</strong><small>{label(user.role)}</small><button className="text-button" onClick={() => void run("logout", async () => { await api("/api/session", { method: "DELETE" }); rememberUser(null); })}>Sign out</button></div></header>
+    <header className="roles-header"><a className="brand" href="/"><span className="brand-logo">✓</span><span>passcheck.</span></a><nav aria-label="Role views">{ROLES.map(role => <button key={role} disabled={!canViewRole(user, role)} aria-current={view === role ? "page" : undefined} className={view === role ? "active" : ""} onClick={() => { setView(role); setPackingId(null); setStatus(""); setFulfillment(""); setDate(""); }}>{label(role)}{!canViewRole(user, role) && <span aria-label="Unavailable"> · locked</span>}</button>)}</nav><div className="identity"><strong>{user.name}</strong><small>{label(user.role)}</small><button className="text-button" disabled={busy !== null} onClick={() => void run("logout", async () => { await api("/api/session", { method: "DELETE" }); rememberUser(null); })}>Sign out</button></div></header>
+    {browserDemo && <div className="browser-storage-banner"><span><strong>Browser demo</strong> · Orders stay in this browser and are shared when you switch roles. Other browsers start separately.</span>{user.role === "MANAGER" && <button className="button secondary" disabled={busy !== null} onClick={() => { if (confirm("Clear this browser's demo orders, checks, and preferences?")) void run("browser-reset", async () => { await resetBrowserDemo(); identity.current++; setOrders([]); setPackingId(null); await load(); setNotice("This browser demo was reset."); }); }}>Reset browser demo</button>}</div>}
     {demo && <div className="demo-banner"><span>DEVELOPMENT DEMO · simulated identities</span><select aria-label="Development demo identity" value={user.id.startsWith("demo-") ? user.id : ""} disabled={busy !== null} onChange={event => { const id = event.target.value; void run("demo", async () => { const result = await api<{ user: User }>("/api/session/demo", { method: "POST", body: JSON.stringify({ userId: id }) }); rememberUser(result.user); }); }}><option value="" disabled>Choose demo account</option>{["manager", "customer", "customer-other", "waiter", "chef", "driver", "driver-other"].map(value => <option key={value} value={`demo-${value}`}>{label(value.replaceAll("-", " "))}</option>)}</select>{user.role === "MANAGER" && <button className="text-button" disabled={busy !== null} onClick={() => { if (confirm("Reset all development orders and checks?")) void run("reset", async () => { await api("/api/demo/reset", { method: "POST" }); await load(); setNotice("Development demo reset."); }); }}>Reset demo</button>}</div>}
     <main className="roles-main"><div className="page-heading"><div><div className="eyebrow">THE PASS, UNDER CONTROL</div><h1>{label(view)} view<span>.</span></h1><p>{descriptions[view]}</p></div><div className="role-refresh"><span>Updates every 4 seconds</span><button className="button secondary" disabled={loading || busy !== null} onClick={() => void load()}>{loading ? "Refreshing…" : "Refresh"}</button></div></div>
       {error && <p className="operation-error" role="alert">{error}</p>}{notice && <p className="operation-notice" role="status">{notice}</p>}
@@ -151,7 +153,7 @@ export function OperationsApp() {
         {view === "DRIVER" && <>{section("Delivery progress", active.filter(order => order.fulfillment === "DELIVERY"))}{section("Completed deliveries", completed.filter(order => order.fulfillment === "DELIVERY"))}</>}
       </>}
       {(view === "WAITER" || view === "MANAGER") && selectedPacking && <section id="waiter-packaging" className="waiter-packing" aria-label="Waiter packaging"><div className="section-title"><h2>Waiter packaging · {selectedPacking.id}</h2><select aria-label="Choose order to package" value={selectedPacking.id} onChange={event => setPackingId(event.target.value)}>{packingOrders.map(order => <option key={order.id} value={order.id}>{order.id}</option>)}</select></div><p className="order-notes">{selectedPacking.notes || "No preparation notes."}</p>{selectedPacking.items.map(item => item.notes || item.options.length ? <p key={item.menuItemId} className="order-notes">{item.name}: {item.options.join(", ")} {item.notes}</p> : null)}<ServerPackingPanel key={`${user.id}:${selectedPacking.id}`} order={selectedPacking} onOrder={receiveOrder} /></section>}
-      <footer className="page-footer"><span>PASSCHECK · One record, clear handoffs.</span><span>Server-persisted orders · {SOURCE_LABELS[source]}</span></footer>
+      <footer className="page-footer"><span>PASSCHECK · One record, clear handoffs.</span><span>{browserDemo ? "Orders saved in this browser" : "Server-persisted orders"} · {SOURCE_LABELS[source]}</span></footer>
     </main>
   </div>;
 }

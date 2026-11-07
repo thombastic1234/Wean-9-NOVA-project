@@ -1,4 +1,5 @@
 import { hasCompletedCheck, visionResponseSchema, type Order, type VisionResponse } from "./contracts";
+import { appFetch } from "./apiClient";
 
 export type PhotoCheckRequest = {
   orderId: string;
@@ -9,7 +10,7 @@ export type PhotoCheckRequest = {
 
 // Recognition and count comparison belong to Person 4; validate their result here.
 export async function checkPackingPhoto(request: PhotoCheckRequest, signal: AbortSignal): Promise<VisionResponse> {
-  const response = await fetch("/api/verify", {
+  const response = await appFetch("/api/verify", {
     method: "POST", headers: { "Content-Type": "application/json" }, signal,
     body: JSON.stringify({ ...request, expectedItems: request.expectedItems.map(({ menuItemId, quantity }) => ({ menuItemId, quantity })) }),
   });
