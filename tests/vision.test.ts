@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { verifyRequestSchema, visionResponseSchema } from "../src/lib/contracts";
 import { buildVisionCompletion, compareObservation, observationSchema, verifyPhoto, VISION_TIMEOUT_MS, type VerifyRequest } from "../src/lib/visionService";
-import { POST } from "../src/app/api/verify/route";
+import { processVisionRequest as POST } from "../src/server/visionHandler";
 
 const imageDataUrl = "data:image/png;base64," + readFileSync("tests/fixtures/vision/correct.png").toString("base64");
 const request: VerifyRequest = { orderId: "ON-1", scanId: "scan-1", imageDataUrl,

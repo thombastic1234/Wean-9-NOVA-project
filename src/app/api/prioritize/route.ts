@@ -1,13 +1,17 @@
-import { NextResponse } from "next/server";
-import { priorityRequestSchema } from "@/lib/contracts";
-import { prioritizeOrders } from "@/lib/priorityService";
-
-export const runtime = "nodejs";
+import { makePriorityRequest } from '@/lib/priority';
+import { toPackingOrder } from '@/lib/operations';
+import { getRepository, HttpError } from '@/server/database';
+import { checkOrigin, errorResponse, requireUser } from '@/server/http';
+import { processPriorityRequest } from '@/server/priorityHandler';
+export const runtime = 'nodejs';
 export async function POST(request: Request) {
-  let body: unknown;
-  try { body = await request.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
-  const parsed = priorityRequestSchema.safeParse(body);
-  if (!parsed.success) return NextResponse.json({ error: "Invalid priority request", issues: parsed.error.issues }, { status: 400 });
-  const response = await prioritizeOrders(parsed.data, process.env.OPENROUTER_API_KEY);
-  return NextResponse.json(response, { headers: { "Cache-Control": "no-store" } });
+  try {
+    checkOrigin(request); const user = requireUser(request, ['MANAGER', 'CHEF']);
+    return await processPriorityRequest(request, input => {
+      const repository = getRepository();
+      const orders = input.orders.map(row => repository.read(user, row.orderId));
+      if (orders.some(order => order.status !== 'PLACED')) throw new HttpError(409, 'Only placed orders may be prioritized');
+      return makePriorityRequest(orders.map(toPackingOrder), repository.settings(), input.requestVersion);
+    });
+  } catch (error) { return errorResponse(error); }
 }

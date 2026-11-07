@@ -1,30 +1,20 @@
-// Start Next.js with OPENROUTER_API_KEY in .env.local first. Never prints credentials.
+// Authenticated live check. Test responses and rules fallback do not count as live AI.
 import assert from 'node:assert/strict';
-
-const request = {
-  requestVersion: 1,
-  settings: { ageWeight: 3, urgencyWeight: 5, courierWeight: 4, maxWaitMinutes: 20 },
-  orders: [
-    { orderId: 'D104', fulfillment: 'delivery', ageMinutes: 12, minutesUntilTargetReady: 4, estimatedPrepMinutes: 6, courierWaitingMinutes: 3 },
-    { orderId: 'T021', fulfillment: 'dine_in', ageMinutes: 8, minutesUntilTargetReady: 12, estimatedPrepMinutes: 5, courierWaitingMinutes: 0 },
-    { orderId: 'T018', fulfillment: 'dine_in', ageMinutes: 22, minutesUntilTargetReady: 15, estimatedPrepMinutes: 5, courierWaitingMinutes: 0 },
-  ],
-};
+import { smokeSession } from './smoke-session.mjs';
 try {
-  const response = await fetch(`${process.env.APP_URL || 'http://127.0.0.1:3000'}/api/prioritize`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
-    signal: AbortSignal.timeout(15_000),
-  });
-  assert.equal(response.status, 200, 'Local priority endpoint must succeed');
+  const call = await smokeSession(['MANAGER', 'CHEF']);
+  const source = process.env.PASSCHECK_SMOKE_SOURCE || 'ONLINE';
+  const data = await (await call(`/api/orders?source=${encodeURIComponent(source)}`)).json();
+  const queued = data.orders.filter(order => order.status === 'PLACED').slice(0, 10);
+  assert.ok(queued.length, 'Create at least one placed order before the live priority check');
+  const { settings } = await (await call('/api/settings')).json();
+  const now = Date.now();
+  const request = { requestVersion: 1, settings, orders: queued.map(order => ({ orderId: order.id, fulfillment: order.fulfillment.toLowerCase(), ageMinutes: Math.max(0, (now - Date.parse(order.createdAt)) / 60_000), estimatedPrepMinutes: 8, minutesUntilTargetReady: (Date.parse(order.createdAt) + 20 * 60_000 - now) / 60_000, courierWaitingMinutes: 0 })) };
+  const response = await call('/api/prioritize', { method: 'POST', body: JSON.stringify(request) });
+  assert.equal(response.status, 200);
   const result = await response.json();
-  assert.equal(result.requestVersion, request.requestVersion);
-  assert.deepEqual(result.ranking.map(row => row.orderId).sort(), ['D104', 'T018', 'T021']);
-  assert.equal(result.ranking[0].orderId, 'T018', 'Code must enforce the maximum-wait rule');
-  assert.ok(result.ranking.every(row => typeof row.reason === 'string' && row.reason.trim().length > 0));
-  assert.equal(result.mode, 'ai', 'Live text/structured-output smoke test NOT passed: server returned rules fallback. Check the server key, connectivity, or provider support.');
-  console.log('PASS: live OpenRouter text + structured JSON, complete unique ranking, version, maximum-wait override.');
-  for (const row of result.ranking) console.log(`${row.orderId}: ${row.reason}`);
-} catch (error) {
-  console.error(error.message);
-  process.exitCode = 1;
-}
+  assert.equal(result.requestVersion, 1);
+  assert.deepEqual(result.ranking.map(row => row.orderId).sort(), queued.map(order => order.id).sort());
+  assert.equal(result.mode, 'ai', 'Live smoke NOT passed: server returned rules fallback');
+  console.log('PASS: authenticated live priority request returned complete structured AI ranking. This does not establish scheduling quality.');
+} catch (error) { console.error(error.message); process.exitCode = 1; }

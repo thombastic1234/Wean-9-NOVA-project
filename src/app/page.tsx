@@ -1,6 +1,5 @@
-import { KitchenBoard } from "@/components/KitchenBoard";
-import { OrderProvider } from "@/components/OrderProvider";
+import { OperationsApp } from "@/components/OperationsApp";
 
 export default function Home() {
-  return <OrderProvider><KitchenBoard /></OrderProvider>;
+  return <OperationsApp />;
 }

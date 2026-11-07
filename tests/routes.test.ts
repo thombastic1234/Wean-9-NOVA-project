@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { POST as prioritize } from "../src/app/api/prioritize/route";
-import { POST as verify } from "../src/app/api/verify/route";
+import { processPriorityRequest as prioritize } from "../src/server/priorityHandler";
+import { processVisionRequest as verify } from "../src/server/visionHandler";
 import { DEFAULT_SETTINGS } from "../src/lib/contracts";
 
 function request(path: string, body: unknown) { return new Request(`http://localhost/api/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }

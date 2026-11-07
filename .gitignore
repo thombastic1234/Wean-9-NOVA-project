@@ -7,3 +7,7 @@ coverage/
 !.env.example
 test-results/
 .npm-cache/
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

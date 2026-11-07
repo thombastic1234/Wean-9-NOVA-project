@@ -1,219 +1,118 @@
-// Optional local browser check using Node's built-in WebSocket and Chrome/Edge.
-// Start the app first. Run: node scripts/browser-smoke.mjs
+// Builds must already exist. Uses a temporary SQLite database and installed Chrome/Edge.
+// Run npm run test:browser. No real accounts, credentials, or API keys are used.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { createServer } from 'node:net';
+import { Repository } from '../src/server/database.ts';
 
+const temporary = await mkdtemp(join(tmpdir(), 'passcheck-roles-'));
+const databasePath = join(temporary, 'smoke.sqlite');
+const repo = new Repository(databasePath);
+const password = randomBytes(24).toString('hex');
+const accounts = {};
+for (const role of ['MANAGER', 'CUSTOMER', 'WAITER', 'CHEF', 'DRIVER']) accounts[role] = repo.createUser({ email: `${role.toLowerCase()}@smoke.invalid`, name: `${role[0]}${role.slice(1).toLowerCase()} Test`, role, password });
+const other = repo.createUser({ email: 'other@smoke.invalid', name: 'Other customer', role: 'CUSTOMER', password });
+const driver2 = repo.createUser({ email: 'driver2@smoke.invalid', name: 'Other driver', role: 'DRIVER', password });
+const create = (user, fulfillment, source = 'ONLINE') => repo.create(user, { source, fulfillment, tableNumber: '03', deliveryAddress: '123 Smoke Street', contact: 'Test contact', notes: 'No onions', items: [{ menuItemId: 'burger', quantity: 1 }, { menuItemId: 'milkshake', quantity: 1 }] }, randomUUID());
+const delivery = create(accounts.CUSTOMER, 'DELIVERY'); const hidden = create(other, 'TAKEAWAY');
+create(accounts.WAITER, 'DINE_IN', 'IN_PERSON');
+const portServer = createServer(); await new Promise(resolve => portServer.listen(0, '127.0.0.1', resolve));
+const port = portServer.address().port; await new Promise(resolve => portServer.close(resolve));
+const base = `http://127.0.0.1:${port}`;
+let server; let serverOutput = '';
+function startServer() {
+  server = spawn(process.execPath, [resolve('node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(port)], { windowsHide: true, env: { ...process.env, NODE_ENV: 'production', NEXT_TELEMETRY_DISABLED: '1', OPENROUTER_API_KEY: '', PASSCHECK_DATABASE_PATH: databasePath, PASSCHECK_DEMO_MODE: 'true' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  server.stdout.on('data', chunk => { serverOutput += chunk.toString(); }); server.stderr.on('data', chunk => { serverOutput += chunk.toString(); });
+}
+async function stopServer() { if (!server || server.exitCode !== null) return; const exited = new Promise(resolve => server.once('exit', resolve)); server.kill(); await exited; }
 const browserPath = process.env.EDGE_PATH || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe');
-const profile = await mkdtemp(join(tmpdir(), 'passcheck-browser-'));
-const browser = spawn(browserPath, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { windowsHide: true, stdio: 'ignore' });
+let browser; let socket; let sequence = 0; const pending = new Map(); const errors = [];
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-let socket;
-let sequence = 0;
-const pending = new Map();
-const errors = [];
-async function until(fn, description, attempts = 100) {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    try { const value = await fn(); if (value) return value; } catch {}
-    await delay(100);
-  }
-  throw new Error(`Timed out: ${description}`);
+async function until(fn, description, attempts = 150) { for (let i = 0; i < attempts; i++) { try { const value = await fn(); if (value) return value; } catch {} await delay(100); } throw new Error(`Timed out: ${description}`); }
+function command(method, params = {}) { const id = ++sequence; return new Promise((resolve, reject) => { pending.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); }); }
+async function evaluate(expression) { const result = await command('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text); return result.result.value; }
+async function click(text, scope = 'document') {
+  const point = await until(() => evaluate(`(() => { const root = ${scope}; if(!root)return null; const button = [...root.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(text)} && !b.disabled); if (!button) return null; button.scrollIntoView({block:'center',behavior:'instant'}); const rect = button.getBoundingClientRect(); const point={x:rect.x+rect.width/2,y:rect.y+rect.height/2}; return document.elementFromPoint(point.x,point.y)?.closest('button')===button?point:null; })()`), `clickable ${text}`);
+  assert.ok(point, `Enabled button: ${text}`); await command('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 }); await command('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
 }
-function command(method, params = {}) {
-  const id = ++sequence;
-  return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    socket.send(JSON.stringify({ id, method, params }));
-  });
+async function fill(selector, value) { await evaluate(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!element) throw new Error('Missing form element'); const proto = element.tagName === 'SELECT' ? HTMLSelectElement.prototype : element.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto,'value').set.call(element,${JSON.stringify(value)}); element.dispatchEvent(new Event(element.tagName === 'SELECT' ? 'change' : 'input',{bubbles:true})); })()`); }
+async function signIn(user) {
+  if (await evaluate(`Boolean(document.querySelector('.roles-header'))`)) { await click('Sign out'); await until(() => evaluate(`Boolean(document.querySelector('.auth-card'))`), 'sign-out'); }
+  await fill('[name=email]', user.email); await fill('[name=password]', password); await click('Sign in');
+  await until(() => evaluate(`document.querySelector('.identity strong')?.textContent === ${JSON.stringify(user.name)}`), `sign in ${user.role}`);
+  await until(() => evaluate(`!document.querySelector('.role-loading')`), 'orders loaded');
 }
-async function evaluate(expression) {
-  const response = await command('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-  if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description || response.exceptionDetails.text);
-  return response.result.value;
-}
-async function click(text) {
-  assert.equal(await evaluate(`(() => { const button = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(text)} && !b.disabled); if (!button) return false; button.click(); return true; })()`), true, `Enabled button: ${text}`);
-}
-const stored = `JSON.parse(localStorage.getItem('passcheck.demo.v1'))`;
-const order = id => `${stored}.orders.find(o => o.id === ${JSON.stringify(id)})`;
-async function screenshot(name) {
-  const shot = await command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
-  await writeFile(join('test-results', name), Buffer.from(shot.data, 'base64'));
-}
+const scope = id => `document.querySelector('[data-order-id="${id}"]')`;
+async function state(id, expected) { await until(() => repo.get(id)?.status === expected, `${id} ${expected}`); }
+async function shot(name) { const scroll = await evaluate('window.scrollY'); await evaluate('window.scrollTo({top:0,behavior:"instant"})'); const image = await command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }); await writeFile(join('test-results', name), Buffer.from(image.data, 'base64')); await evaluate(`window.scrollTo({top:${scroll},behavior:"instant"})`); }
+async function auth(user) { const response = await fetch(`${base}/api/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: user.email, password }) }); assert.equal(response.status, 200); return response.headers.get('set-cookie').split(';')[0]; }
 
 try {
-  const port = await until(async () => (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0], 'browser launch');
-  const target = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
-  socket = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
-  socket.addEventListener('message', event => {
-    const message = JSON.parse(event.data);
-    if (message.id) {
-      const item = pending.get(message.id);
-      if (item) { pending.delete(message.id); message.error ? item.reject(new Error(message.error.message)) : item.resolve(message.result); }
-    }
-    if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.text);
-    if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') errors.push(message.params.args.map(arg => arg.value || arg.description).join(' '));
-  });
-  await command('Runtime.enable');
-  await command('Page.enable');
-  await command('Page.addScriptToEvaluateOnNewDocument', { source: `window.__priorityCalls = 0; const originalFetch = window.fetch.bind(window); window.fetch = (...args) => { if (args[0] === '/api/prioritize') window.__priorityCalls++; return originalFetch(...args); };` });
-  await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
-  await command('Page.navigate', { url: process.env.APP_URL || 'http://127.0.0.1:3000' });
-  await until(() => evaluate(`document.querySelectorAll('.queue-column .ticket').length === 6`), 'six initial queue tickets');
-  await until(() => evaluate(`document.querySelector('.priority-reason')?.textContent.includes('Rules score')`), 'priority fallback');
-  assert.equal(await evaluate('window.__priorityCalls'), 0, 'initial rendering makes no automatic API request');
-  await click('Reprioritize');
-  await until(() => evaluate(`!document.querySelector('.priority-actions button').disabled`), 'explicit priority request finishes');
-  assert.equal(await evaluate('window.__priorityCalls'), 1);
-  assert.equal(await evaluate(`document.querySelector('.mode-pill').textContent`), 'Rules fallback active');
-
-  // Hold a simulated test response to verify no overlap, actionable tickets, and stale-result rejection.
-  await evaluate(`window.__realFetch = window.fetch; window.fetch = (url, options) => { if (url !== '/api/prioritize') return window.__realFetch(url, options); window.__priorityCalls++; window.__priorityRequest = JSON.parse(options.body); return new Promise(resolve => window.__resolvePriority = resolve); };`);
-  await evaluate(`document.querySelector('.priority-actions button').click(); document.querySelector('.priority-actions button').click();`);
-  await until(() => evaluate('typeof window.__resolvePriority === "function"'), 'held test request');
-  assert.equal(await evaluate('window.__priorityCalls'), 2, 'overlapping clicks start only one request');
-  assert.equal(await evaluate(`document.querySelector('.queue-column .ticket button.full').disabled`), false, 'queue stays actionable during loading');
-  await click('Waiter order');
-  await until(() => evaluate(`document.querySelectorAll('.queue-column .ticket').length === 7`), 'input changes during loading');
-  await evaluate(`window.__resolvePriority(new Response(JSON.stringify({ requestVersion: window.__priorityRequest.requestVersion, mode: 'ai', ranking: window.__priorityRequest.orders.map(o => ({ orderId: o.orderId, reason: 'Simulated stale test response' })) }), { headers: { 'Content-Type': 'application/json' } })); window.fetch = window.__realFetch;`);
-  await until(() => evaluate(`!document.querySelector('.priority-actions button').disabled`), 'stale request ends');
-  assert.equal(await evaluate(`document.querySelector('.mode-pill').textContent`), 'Rules fallback active', 'stale AI result cannot replace current rules');
-  assert.equal(await evaluate(`document.body.textContent.includes('Simulated stale test response')`), false);
-  await click('Reset demo'); await click('Reset demo now');
-  await until(() => evaluate(`document.querySelectorAll('.queue-column .ticket').length === 6`), 'reset after priority tests');
-  assert.equal(await evaluate(`(() => { const ticket = document.querySelector('.queue-column .ticket'); const button = ticket.querySelector('button.full'); const t = ticket.getBoundingClientRect(); const b = button.getBoundingClientRect(); return t.height > 200 && b.bottom <= t.bottom; })()`), true, 'queue cards retain their contents inside the scroll area');
-  await mkdir('test-results', { recursive: true });
-  await screenshot('desktop-queue.png');
-  await click('Waiter order'); await click('Online order');
-  await until(() => evaluate(`${stored}.orders.length === 8`), 'both source buttons');
-  await evaluate(`document.querySelector('.queue-column .ticket button.full').click()`);
-  await until(() => evaluate(`${order('ON-1041')}.status === 'cooking'`), 'start cooking');
-  await click('Finish cooking');
-  await until(() => evaluate(`document.querySelector('.packing-ticket') !== null`), 'packing panel');
-  assert.equal(await evaluate(`document.querySelector('.packing-ticket button.lime').disabled`), true);
-  await evaluate(`document.querySelectorAll('.check-row input').forEach(input => input.click())`);
-  await click('Complete manual check');
-  await until(() => evaluate(`${order('ON-1041')}.verification?.result === 'manual_checked'`), 'manual check');
-  assert.equal(await evaluate(`document.querySelector('.packing-ticket button.lime').disabled`), true);
-  await evaluate(`document.querySelector('.seal-check input').click()`);
-  assert.equal(await evaluate(`document.querySelector('.packing-ticket button.lime').disabled`), true);
-  await evaluate(`(() => { const select = document.querySelector('.location-field select'); const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; setter.call(select, 'Shelf A1'); select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-  await screenshot('desktop-packing.png');
-  await click('Mark ready for pickup');
-  await until(() => evaluate(`document.querySelector('.pickup-card')?.textContent.includes('PON1041')`), 'pickup board');
-  assert.equal(await evaluate(`document.querySelector('.pickup-card').textContent.includes('Shelf A1')`), true);
-  await command('Page.reload', { ignoreCache: true });
-  await until(() => evaluate(`document.querySelector('.pickup-card')?.textContent.includes('PON1041')`), 'restore ready ticket');
-  assert.equal(await evaluate(`${stored}.orders.length`), 8, 'refresh preserves orders before initial persistence write');
-  assert.equal(await evaluate(`${order('ON-1041')}.handoffLocation`), 'Shelf A1');
-  await screenshot('desktop-ready.png');
-  await click('Mark collected');
-  await until(() => evaluate(`document.querySelectorAll('.pickup-card').length === 0`), 'collected ticket leaves board');
-  await command('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-  assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true, 'mobile has no horizontal overflow');
-  await screenshot('mobile-queue.png');
-  await click('Reset demo'); await click('Reset demo now');
-  await until(() => evaluate(`${stored}.orders.length === 6 && ${stored}.orders.every(o => o.status === 'queued' && !o.verification && !o.handoffLocation)`), 'reset clears state');
-  // Two packing orders must retain separate authoritative checks while local state resets.
-  await evaluate(`document.querySelector('.queue-column .ticket button.full').click()`);
-  await click('Finish cooking');
-  await evaluate(`document.querySelectorAll('.check-row input').forEach(input => input.click())`);
-  await click('Complete manual check');
-  await until(() => evaluate(`${order('ON-1041')}.verification?.result === 'manual_checked'`), 'first order rechecked');
-  await evaluate(`(() => { const ticket = [...document.querySelectorAll('.queue-column .ticket')].find(ticket => ticket.querySelector('h3').textContent === 'IN-1042'); ticket.querySelector('button.full').click(); })()`);
-  await click('Finish cooking');
-  await until(() => evaluate(`document.querySelector('.packing-ticket h3')?.textContent === 'IN-1042'`), 'second order selected');
-  assert.equal(await evaluate(`document.querySelectorAll('.check-row input:checked').length`), 0, 'switching orders cannot copy a check');
-  await click('ON-1041');
-  assert.equal(await evaluate(`document.querySelectorAll('.check-row input:checked').length > 0`), true, 'first check remains in shared state');
-  await click('IN-1042');
-  assert.equal(await evaluate(`document.querySelectorAll('.check-row input:checked').length`), 0);
-  await evaluate(`document.querySelectorAll('.check-row input').forEach(input => input.click())`);
-  await click('Complete manual check');
-  await evaluate(`document.querySelector('.seal-check input').click()`);
-  await evaluate(`(() => { const select = document.querySelector('.location-field select'); select.value = 'Pass 2'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-  await click('Mark ready for pickup');
-  await until(() => evaluate(`document.querySelector('.pickup-card')?.textContent.includes('Pass 2')`), 'dine-in ready location');
-  assert.equal(await evaluate(`${order('IN-1042')}.tableNumber`), '03', 'table destination is separate from pass');
-  await click('Reset demo'); await click('Reset demo now');
-  await until(() => evaluate(`${stored}.orders.every(o => o.status === 'queued')`), 'clean final demo');
-
-  // Packing acceptance uses simulated vision results, never a live recognition claim.
-  await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
-  await evaluate(`(() => { const state = ${stored}; state.orders[0].items = [{menuItemId:'burger',name:'Burger',quantity:1},{menuItemId:'fries',name:'Fries',quantity:1},{menuItemId:'milkshake',name:'Milkshake',quantity:1}]; localStorage.setItem('passcheck.demo.v1', JSON.stringify(state)); })()`);
-  await command('Page.reload', { ignoreCache: true });
-  await until(() => evaluate(`document.querySelectorAll('.queue-column .ticket').length === 6`), 'packing fixture reload');
-  await evaluate(`document.querySelector('.queue-column .ticket button.full').click()`);
-  await click('Finish cooking');
-  await evaluate(`window.__upload = async (type = 'image/png') => { const canvas = document.createElement('canvas'); canvas.width = 2400; canvas.height = 1800; const ctx = canvas.getContext('2d'); ctx.fillStyle = '#f6f2df'; ctx.fillRect(0,0,2400,1800); ctx.fillStyle = '#27382a'; ctx.font = '100px sans-serif'; ctx.fillText('SIMULATED TEST PHOTO',100,300); const blob = await new Promise(resolve => canvas.toBlob(resolve,'image/png')); const data = new DataTransfer(); data.items.add(new File([blob], 'packing-test.png', {type})); const input = document.querySelector('.photo-upload input'); input.files = data.files; input.dispatchEvent(new Event('change', {bubbles:true})); };`);
-  await evaluate(`window.__upload()`);
-  await until(() => evaluate(`document.querySelector('.packing-photo img')?.naturalWidth === 1024`), 'resized image preview');
-  await click('Check photo');
-  await until(() => evaluate(`document.querySelector('.verification-result')?.textContent.includes('Live vision is unavailable')`), 'real endpoint honest missing-key review');
-  assert.equal(await evaluate(`document.querySelector('.seal-check input').disabled`), true);
-  assert.equal(await evaluate(`document.querySelector('.packing-manual').disabled`), false, 'manual fallback remains available');
-
-  await evaluate(`window.__visionCalls = 0; window.__visionFetch = window.fetch; window.fetch = (url, options) => { if (url !== '/api/verify') return window.__visionFetch(url, options); window.__visionCalls++; const request = JSON.parse(options.body); window.__lastVisionRequest = request; return new Promise((resolve,reject) => { window.__resolveVision = response => resolve(new Response(JSON.stringify({orderId:request.orderId,scanId:request.scanId,...response}),{headers:{'Content-Type':'application/json'}})); options.signal.addEventListener('abort', () => reject(new DOMException('Aborted','AbortError'))); }); }; window.__match = { result:'match', observed:[{menuItemId:'burger',quantity:1},{menuItemId:'fries',quantity:1},{menuItemId:'milkshake',quantity:1}], missing:[],extra:[],unknownItems:[],uncertainties:[] };`);
-  await evaluate(`document.querySelector('.packing-photo-actions button').click(); document.querySelector('.packing-photo-actions button').click();`);
-  await until(() => evaluate(`window.__visionCalls === 1`), 'single pending photo request');
-  assert.equal(await evaluate(`document.querySelector('.packing-pending').textContent`), 'Checking photo…');
-  assert.equal(await evaluate(`document.querySelector('.seal-check input').disabled`), true);
-  await evaluate(`window.__resolveVision({...window.__match,result:'mismatch',observed:[{menuItemId:'burger',quantity:1},{menuItemId:'milkshake',quantity:2}],missing:[{menuItemId:'fries',quantity:1}],extra:[{menuItemId:'milkshake',quantity:1}]})`);
-  await until(() => evaluate(`document.querySelector('.verification-result.mismatch')?.textContent.includes('Missing: Fries ×1')`), 'missing fries quantity');
-  assert.equal(await evaluate(`document.querySelector('.verification-result.mismatch').textContent.includes('Extra: Milkshake ×1')`), true);
-  await screenshot('packing-mismatch.png');
-  await click('Recheck photo');
-  await evaluate(`window.__resolveVision(window.__match)`);
-  await until(() => evaluate(`document.querySelector('.verification-result.match')?.textContent.includes('Visible counts match')`), 'rescan replaces mismatch');
-  assert.equal(await evaluate(`${order('ON-1041')}.verification.observed.find(i => i.menuItemId === 'milkshake').quantity`), 1, 'counts replace rather than accumulate');
-  await evaluate(`document.querySelector('.seal-check input').click()`);
-  await screenshot('packing-match.png');
-  await evaluate(`window.__upload()`);
-  await until(() => evaluate(`${order('ON-1041')}.verification === null && ${order('ON-1041')}.packingConfirmedAt === null && document.querySelector('.packing-photo img')?.naturalWidth === 1024`), 'changed photo clears check and confirmation');
-  await click('Check photo');
-  await evaluate(`window.__staleVision = window.__resolveVision; window.__upload()`);
-  await until(() => evaluate(`document.querySelector('.packing-photo img')?.naturalWidth === 1024`), 'replacement prepared during pending request');
-  await evaluate(`window.__staleVision(window.__match)`);
-  assert.equal(await evaluate(`${order('ON-1041')}.verification`), null, 'old photo response ignored');
-  await click('Check photo');
-  await evaluate(`window.__resolveVision({...window.__match,scanId:'wrong-scan'})`);
-  await until(() => evaluate(`document.querySelector('.verification-result.review_needed')?.textContent.includes('invalid or outdated')`), 'wrong scan rejected');
-  await evaluate(`document.querySelectorAll('.check-row input').forEach(input => { if (!input.closest('label').textContent.includes('No extra')) input.click(); })`);
-  assert.equal(await evaluate(`document.querySelector('.packing-manual button').disabled`), true, 'separate no-extras checkbox required');
-  await evaluate(`document.querySelector('.check-row:last-child input').click()`);
-  await click('Complete manual check');
-  await until(() => evaluate(`${order('ON-1041')}.verification?.result === 'manual_checked'`), 'manual fallback after failed photo check');
-  await evaluate(`document.querySelector('.seal-check input').click(); window.__upload('image/gif')`);
-  await until(() => evaluate(`document.querySelector('.verification-result.review_needed')?.textContent.includes('Choose a JPEG or PNG')`), 'unsupported file error');
-  assert.equal(await evaluate(`${order('ON-1041')}.packingConfirmedAt`), null);
-  await evaluate(`window.__upload()`);
-  await until(() => evaluate(`document.querySelector('.packing-photo img')?.naturalWidth === 1024`), 'new photo after unsupported file');
-  await click('Check photo');
-  await until(() => evaluate(`document.querySelector('.verification-result.review_needed')?.textContent.includes('timed out')`), 'photo request deadline', 200);
-  await click('Recheck photo');
-  await evaluate(`window.__otherOrderResponse = window.__resolveVision; [...document.querySelectorAll('.queue-column .ticket')].find(ticket => ticket.querySelector('h3').textContent === 'IN-1042').querySelector('button.full').click()`);
-  await click('Finish cooking');
-  await click('IN-1042');
-  await until(() => evaluate(`document.querySelector('.packing-ticket h3').textContent === 'IN-1042'`), 'switch away from pending scan');
-  await evaluate(`window.__otherOrderResponse(window.__match)`);
-  assert.equal(await evaluate(`${order('ON-1041')}.verification`), null, 'unmounted pending scan cannot update old order');
-  assert.equal(await evaluate(`document.querySelector('.packing-photo img')`), null, 'order switch clears photo');
-  assert.equal(await evaluate(`${order('IN-1042')}.verification`), null, 'other order response ignored');
-  await command('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-  await evaluate(`window.__upload()`);
-  await until(() => evaluate(`document.querySelector('.packing-photo img')?.naturalWidth === 1024`), 'mobile photo');
-  assert.equal(await evaluate(`document.documentElement.scrollWidth <= innerWidth`), true, 'packing upload has no mobile overflow');
-  await screenshot('packing-mobile.png');
-  await evaluate(`window.fetch = window.__visionFetch`);
-  await click('Reset demo'); await click('Reset demo now');
-
-  assert.deepEqual(errors, [], 'no browser errors');
-  console.log('PASS: upload/resizing, real missing-key review fallback, simulated mismatch/match replacement, duplicate clicks, stale photo/order results, changed photo invalidation, manual no-extras gate, unsupported images, timeout, mobile packing; explicit prioritization, no overlapping requests, stale response rejection, actionable queue, both sources, full manual journey, readiness guards, refresh persistence, collection, mobile layout, reset, packing order switching, dine-in location, no browser errors.');
-  console.log('Screenshots: test-results/desktop-queue.png, desktop-packing.png, desktop-ready.png, mobile-queue.png');
-} finally {
-  if (socket?.readyState === WebSocket.OPEN) socket.close();
-  browser.kill();
+  startServer(); await until(async () => (await fetch(`${base}/api/session`)).ok, 'production server');
+  assert.equal((await fetch(`${base}/api/orders`)).status, 401);
+  assert.equal((await fetch(`${base}/api/session/demo`, { method: 'POST' })).status, 404, 'production ignores demo flag');
+  const cookie = await auth(accounts.CUSTOMER);
+  const mine = await (await fetch(`${base}/api/orders?customerId=${other.id}`, { headers: { Cookie: cookie } })).json();
+  assert.deepEqual(mine.orders.map(order => order.id), [delivery.id]); assert.equal(mine.orders[0].history, undefined);
+  assert.equal((await fetch(`${base}/api/orders/${hidden.id}`, { headers: { Cookie: cookie } })).status, 404);
+  assert.equal((await fetch(`${base}/api/orders/${delivery.id}`, { method: 'PATCH', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'start_preparation', revision: 0, requestId: randomUUID() }) })).status, 403);
+  browser = spawn(browserPath, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${join(temporary, 'browser')}`, 'about:blank'], { windowsHide: true, stdio: 'ignore' });
+  const debugPort = await until(async () => (await readFile(join(temporary, 'browser', 'DevToolsActivePort'), 'utf8')).split('\n')[0], 'headless browser');
+  const target = await (await fetch(`http://127.0.0.1:${debugPort}/json/new?about:blank`, { method: 'PUT' })).json();
+  socket = new WebSocket(target.webSocketDebuggerUrl); await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
+  socket.addEventListener('message', event => { const message = JSON.parse(event.data); if (message.id) { const item = pending.get(message.id); if (item) { pending.delete(message.id); message.error ? item.reject(new Error(message.error.message)) : item.resolve(message.result); } } if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text); if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') errors.push(message.params.args.map(arg => arg.value || arg.description).join(' ')); });
+  await command('Runtime.enable'); await command('Page.enable'); await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
+  await command('Page.navigate', { url: base }); await until(() => evaluate(`Boolean(document.querySelector('.auth-card'))`), 'login screen'); await mkdir('test-results', { recursive: true });
+  await signIn(accounts.MANAGER); assert.equal(await evaluate(`document.querySelectorAll('.roles-header nav button:not(:disabled)').length`), 5); await shot('manager-view.png');
+  await signIn(accounts.CHEF); assert.equal(await evaluate(`document.querySelectorAll('.roles-header nav button:not(:disabled)').length`), 1);
+  await click('Online Orders'); await until(() => evaluate(`Boolean(${scope(delivery.id)})`), 'online chef ticket');
+  await click('Reprioritize'); await until(() => evaluate(`!document.querySelector('.operation-error') && !document.querySelector('.chef-priority button').disabled`), 'authenticated priority fallback');
+  await click('Start preparation', scope(delivery.id)); await state(delivery.id, 'PREPARING');
+  await click('Finish preparation', scope(delivery.id)); await state(delivery.id, 'READY_TO_PACKAGE');
+  await signIn(accounts.WAITER); await click('Online Orders'); await until(() => evaluate(`Boolean(${scope(delivery.id)})`), 'waiter packaging queue');
+  await click('Start packaging', scope(delivery.id)); await state(delivery.id, 'PACKAGING'); await until(() => evaluate(`Boolean(document.querySelector('.waiter-packing'))`), 'embedded packing panel');
+  const photo = (await readFile('tests/fixtures/vision/correct.png')).toString('base64');
+  await evaluate(`(() => {const bytes=Uint8Array.from(atob(${JSON.stringify(photo)}),c=>c.charCodeAt(0));const file=new File([bytes],'packing.png',{type:'image/png'});const transfer=new DataTransfer();transfer.items.add(file);const input=document.querySelector('.photo-upload input');input.files=transfer.files;input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await until(() => evaluate(`!document.querySelector('.packing-photo-actions button').disabled`), 'photo prepared'); await click('Check photo');
+  await until(() => evaluate(`Boolean(document.querySelector('.verification-result.review_needed'))`), 'real missing-key fallback');
+  await evaluate(`document.querySelectorAll('.waiter-packing .check-row input').forEach(input=>input.click())`);
+  await click('Complete manual check'); await until(() => repo.get(delivery.id).verification?.result === 'manual_checked', 'server manual check');
+  await until(() => evaluate(`!document.querySelector('.seal-check input').disabled`), 'packing confirmation unlocked');
+  await evaluate(`document.querySelector('.seal-check input').click()`); await until(() => Boolean(repo.get(delivery.id).packingConfirmedAt), 'confirmation saved');
+  await fill(`select[id="location-${delivery.id}"]`, 'Shelf A1'); await until(() => repo.get(delivery.id).handoffLocation === 'Shelf A1', 'location saved');
+  await shot('waiter-packaging.png'); await click('Ready for driver pickup'); await state(delivery.id, 'READY_FOR_PICKUP');
+  await signIn(accounts.DRIVER); await until(() => evaluate(`Boolean(${scope(delivery.id)})`), 'driver delivery');
+  assert.equal(await evaluate(`document.querySelectorAll('.op-order .op-source').length > 0 && [...document.querySelectorAll('.op-source')].every(element=>element.textContent.includes('Delivery'))`), true);
+  await click('Claim delivery', scope(delivery.id)); await until(() => repo.get(delivery.id).driverId === accounts.DRIVER.id, 'driver claim');
+  const otherDriverCookie = await auth(driver2); assert.equal((await fetch(`${base}/api/orders/${delivery.id}`, { headers: { Cookie: otherDriverCookie } })).status, 404);
+  await click('Mark picked up', scope(delivery.id)); await state(delivery.id, 'OUT_FOR_DELIVERY'); assert.equal(repo.get(delivery.id).completedAt, null); await shot('driver-view.png');
+  await click('Mark delivered', scope(delivery.id)); await state(delivery.id, 'COMPLETED');
+  await signIn(accounts.CUSTOMER); await until(() => evaluate(`Boolean(${scope(delivery.id)})`), 'customer delivery history'); assert.equal(await evaluate(`document.body.textContent.includes(${JSON.stringify(hidden.id)})`), false); assert.equal(await evaluate(`Boolean(document.querySelector('.customer-progress .done:last-child'))`), true); await shot('customer-view.png');
+  // Customer ordering, including server-calculated total and options.
+  await fill('[aria-label="Burger quantity"]', '1'); await fill('[aria-label="Salad quantity"]', '1'); await fill('[aria-label="Burger options"]', 'No cheese'); await click('Review complete · Submit order');
+  await until(() => repo.list(accounts.CUSTOMER).length === 2, 'customer ordering');
+  await signIn(accounts.WAITER); await evaluate(`document.querySelector('.create-order').open=true`); await fill('[aria-label="Burger quantity"]', '1'); await fill('[name=tableNumber]', '07'); await fill('[name=notes]', 'Dine-in smoke test'); await click('Review complete · Submit order');
+  const dine = await until(() => repo.list(accounts.MANAGER).find(order=>order.notes === 'Dine-in smoke test'), 'waiter created dine-in'); assert.equal(dine.source, 'IN_PERSON'); assert.equal(dine.fulfillment, 'DINE_IN');
+  await signIn(accounts.CHEF); await until(() => evaluate(`Boolean(${scope(dine.id)})`), 'dine-in kitchen ticket'); await click('Start preparation', scope(dine.id)); await state(dine.id, 'PREPARING'); await click('Finish preparation', scope(dine.id)); await state(dine.id, 'READY_TO_SERVE'); assert.equal(repo.get(dine.id).packagingStartedAt, null);
+  await signIn(accounts.WAITER); await until(() => evaluate(`Boolean(${scope(dine.id)})`), 'ready-to-serve waiter ticket'); await click('Mark served', scope(dine.id)); await state(dine.id, 'COMPLETED');
+  await command('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true }); assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'responsive top menu'); await shot('roles-mobile.png');
+  await signIn(accounts.MANAGER); await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false }); await click('Online Orders'); await shot('manager-completed.png');
+  await stopServer(); startServer(); await until(async () => (await fetch(`${base}/api/session`)).ok, 'server restart');
+  await command('Page.reload', { ignoreCache: true }); await until(() => evaluate(`document.querySelector('.identity strong')?.textContent === ${JSON.stringify(accounts.MANAGER.name)}`), 'persisted session after restart');
+  assert.equal(repo.get(delivery.id).status, 'COMPLETED'); assert.ok(repo.get(delivery.id).history.some(entry=>entry.action === 'pickup')); assert.deepEqual(errors, [], 'no browser errors');
+  console.log('PASS: five role views; real login/logout; production demo disabled; direct API isolation; source tabs; chef preparation; waiter order creation and embedded photo/manual packaging; driver claim/pickup/delivery; customer ordering/progress; dine-in served without packaging; mobile menu; SQLite orders/history/sessions survive server restart.');
+  console.log('Screenshots: test-results/manager-view.png, waiter-packaging.png, driver-view.png, customer-view.png, roles-mobile.png, manager-completed.png');
+} catch (error) {
+  console.error(error);
+  if (socket?.readyState === WebSocket.OPEN) {
+    await mkdir('test-results', { recursive: true });
+    await shot('roles-failure.png');
+    console.error(await evaluate(`(async()=>({error:document.querySelector('[role=alert]')?.textContent,heading:document.querySelector('h1')?.textContent,identity:document.querySelector('.identity')?.textContent,session:await fetch('/api/session').then(r=>r.json()),button:document.querySelector('.auth-card button')?.textContent}))()`));
+  }
+  console.error(serverOutput.slice(-4000)); process.exitCode = 1;
 }
+finally { socket?.close(); browser?.kill(); await stopServer(); repo.db.close(); }

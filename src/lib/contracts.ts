@@ -28,7 +28,7 @@ export type VisionResponse = z.infer<typeof visionResponseSchema>;
 export type Verification = z.infer<typeof verificationSchema>;
 export const orderSchema = z.object({
   id: z.string().min(1), source: z.enum(["waiter", "online"]), sourceOrderId: z.string().min(1),
-  fulfillment: z.enum(["dine_in", "delivery"]), tableNumber: z.string().nullable(),
+  fulfillment: z.enum(["dine_in", "delivery", "takeaway"]), tableNumber: z.string().nullable(),
   items: z.array(z.object({ menuItemId: z.enum(MENU_IDS), name: z.string(), quantity: quantity.refine(n => n > 0) })).min(1),
   createdAt: timestamp, targetReadyAt: timestamp, estimatedPrepMinutes: z.number().positive(),
   courierArrivedAt: timestamp.nullable(), status: z.enum(["queued", "cooking", "packing", "ready", "collected"]),
@@ -45,7 +45,7 @@ export type Settings = z.infer<typeof settingsSchema>;
 export const priorityRequestSchema = z.object({
   requestVersion: z.number().int().nonnegative(), settings: settingsSchema,
   orders: z.array(z.object({
-    orderId: z.string().trim().min(1).max(100), fulfillment: z.enum(["dine_in", "delivery"]), ageMinutes: z.number().nonnegative(),
+    orderId: z.string().trim().min(1).max(100), fulfillment: z.enum(["dine_in", "delivery", "takeaway"]), ageMinutes: z.number().nonnegative(),
     estimatedPrepMinutes: z.number().positive(), minutesUntilTargetReady: z.number(), courierWaitingMinutes: z.number().nonnegative(),
   })).refine(orders => new Set(orders.map(order => order.orderId)).size === orders.length, "Duplicate order IDs"),
 });
@@ -62,7 +62,7 @@ export const verifyRequestSchema = z.object({
     .refine(items => MENU_IDS.every(id => items.filter(item => item.menuItemId === id).reduce((sum, item) => sum + item.quantity, 0) <= 100), "Aggregated counts must not exceed 100 per menu ID"),
 });
 export const DEFAULT_SETTINGS: Settings = { ageWeight: 3, urgencyWeight: 5, courierWeight: 4, maxWaitMinutes: 20 };
-export const LOCATIONS = { delivery: ["Shelf A1", "Shelf A2"], dine_in: ["Pass 1", "Pass 2"] } as const;
+export const LOCATIONS = { delivery: ["Shelf A1", "Shelf A2"], takeaway: ["Shelf A1", "Shelf A2"], dine_in: ["Pass 1", "Pass 2"] } as const;
 
 export function hasCompletedCheck(order: Order): boolean {
   const v = order.verification;

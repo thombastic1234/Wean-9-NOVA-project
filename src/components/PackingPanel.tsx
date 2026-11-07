@@ -10,6 +10,7 @@ export type PackingPanelProps = {
   onScanStarted: (scanId: string) => void;
   onVerificationUpdate: (verification: Verification) => void;
   onPackingConfirmed: (confirmed: boolean) => void;
+  checkPhoto?: typeof checkPackingPhoto;
 };
 
 // Reset transient evidence even when a caller does not key the selected order.
@@ -17,7 +18,7 @@ export function PackingPanel(props: PackingPanelProps) {
   return <PackingSession key={`${props.order.id}:${JSON.stringify(props.order.items)}`} {...props} />;
 }
 
-function PackingSession({ order, onScanStarted, onVerificationUpdate, onPackingConfirmed }: PackingPanelProps) {
+function PackingSession({ order, onScanStarted, onVerificationUpdate, onPackingConfirmed, checkPhoto }: PackingPanelProps) {
   const [photo, setPhoto] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -78,7 +79,7 @@ function PackingSession({ order, onScanStarted, onVerificationUpdate, onPackingC
     setLoading(true);
     const timer = setTimeout(() => abort.abort(), 15_000);
     try {
-      const result = await checkPackingPhoto(request, abort.signal);
+      const result = await (checkPhoto ?? checkPackingPhoto)(request, abort.signal);
       if (isCurrent(token)) onVerificationUpdate({ ...result, checkedAt: new Date().toISOString() });
     } catch (error) {
       if (isCurrent(token)) review(scanId, abort.signal.aborted ? "Photo check timed out. Retry or complete the manual checklist." : error instanceof Error ? error.message : "Photo check failed. Retry or check manually.");
